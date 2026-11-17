@@ -1,0 +1,23 @@
+# Overrides for the small staging VPS (2 vCPU / 4 GB):
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
+services:
+  worker:
+    deploy: { replicas: 1 }
+
+  postgres:
+    shm_size: 256m
+    # Later -c flags win over postgres.conf, which assumes 32 GB RAM.
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - max_wal_size=2GB

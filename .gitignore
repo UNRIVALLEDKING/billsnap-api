@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+*.tsbuildinfo
+.env*
+!.env.example
+!deploy/.env.example
+!deploy/.env.lightsail.example
+.DS_Store

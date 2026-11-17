@@ -1,0 +1,100 @@
+# Local development: Postgres 17 + MinIO (S3-compatible). Dev-only credentials.
+#   docker compose -f compose.dev.yml up -d                       # Postgres + MinIO only; run the API with `bun run dev`
+#   docker compose -f compose.dev.yml --profile full up -d --build # everything in Docker, API on 0.0.0.0:3000 (LAN)
+name: billdrop-dev
+
+x-api-env: &api-env
+  NODE_ENV: development
+  PORT: "3000"
+  LOG_LEVEL: info
+  DATABASE_URL: postgres://billdrop:billdrop@postgres:5432/billdrop
+  S3_ENDPOINT: http://minio:9000
+  R2_ACCESS_KEY_ID: billdrop
+  R2_SECRET_ACCESS_KEY: billdrop-dev-secret
+  R2_BUCKET: billdrop-dev
+  JWT_SECRET: local-docker-dev-only-jwt-secret-change-me
+  DEMO_LOGIN_ENABLED: "true"
+  DEMO_EMAIL: demo@billdrop.app
+  DEMO_PASSWORD: Demo@1234
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  AI_MODEL: ${AI_MODEL:-gemini-3.5-flash-lite}
+  AI_FALLBACK_MODEL: ${AI_FALLBACK_MODEL:-gemini-3.8-flash}
+
+services:
+  postgres:
+    image: postgres:17
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
+    environment:
+      POSTGRES_USER: billdrop
+      POSTGRES_PASSWORD: billdrop
+      POSTGRES_DB: billdrop
+    ports: ["127.0.0.1:${POSTGRES_PORT:-54340}:5432"]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./deploy/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billdrop -d billdrop"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # MinIO no longer publishes to Docker Hub / quay; the Chainguard build is the same server (no shell, so no
+  # healthcheck or `mc`; buckets are created by `bun run dev:buckets`).
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: billdrop
+      MINIO_ROOT_PASSWORD: billdrop-dev-secret
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+
+  # --- profile "full": the API itself in Docker -------------------------------------------------------------
+  buckets:
+    profiles: [full]
+    image: oven/bun:1.4.4-slim
+    working_dir: /app
+    command: ["bun", "scripts/ensure-buckets.ts"]
+    environment: *api-env
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./test/ensure-bucket.ts:/app/test/ensure-bucket.ts:ro
+    depends_on: [minio]
+    restart: on-failure # MinIO has no healthcheck; retry until it accepts requests
+
+  migrate:
+    profiles: [full]
+    build: .
+    image: billdrop-api:dev
+    command: ["bun", "run", "src/platform/db/migrate.ts"]
+    environment: *api-env
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    profiles: [full]
+    image: billdrop-api:dev
+    environment: *api-env
+    ports: ["3001:3000"] # all interfaces, so a phone on the same Wi-Fi can reach it
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  # Runs the bill.extract job (Gemini). Serves no HTTP, so the image's HTTP healthcheck is disabled.
+  worker:
+    profiles: [full]
+    image: billdrop-api:dev
+    command: ["bun", "run", "src/main.ts", "--role=worker"]
+    environment: *api-env
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+volumes:
+  pg_data: {}
+  minio_data: {}

@@ -1,0 +1,12 @@
+node_modules
+.git
+.github
+.env*
+deploy
+eval
+test
+**/*.test.ts
+compose.dev.yml
+Dockerfile
+.dockerignore
+coverage

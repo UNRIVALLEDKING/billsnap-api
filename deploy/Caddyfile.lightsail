@@ -1,0 +1,29 @@
+:8002 {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	# Metrics endpoint is internal only
+	respond /metrics* 404
+
+	# Uploads (receipt images, PDFs) up to 50MB
+	handle /v1/bills* {
+		request_body {
+			max_size 50MB
+		}
+		reverse_proxy api1:3000
+	}
+
+	# Standard API routes up to 1MB
+	handle {
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy api1:3000
+	}
+}

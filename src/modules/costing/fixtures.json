@@ -1,0 +1,305 @@
+[
+  {
+    "name": "spreadsheet: 4500 of fees over EC/GL/RL by weight (147 kg)",
+    "input": {
+      "lines": [
+        { "value": "6000.00", "tax": "0", "weightKg": "100" },
+        { "value": "2880.00", "tax": "0", "weightKg": "32" },
+        { "value": "1500.00", "tax": "0", "weightKg": "15" }
+      ],
+      "fees": "4500.00",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "weight",
+      "fallback": null,
+      "lines": [
+        {
+          "fees": "3061.23",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "6000.00",
+          "cost": "9061.23"
+        },
+        {
+          "fees": "979.59",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "2880.00",
+          "cost": "3859.59"
+        },
+        {
+          "fees": "459.18",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "1500.00",
+          "cost": "1959.18"
+        }
+      ]
+    }
+  },
+  {
+    "name": "one sugar line carries all of its own invoice's fees",
+    "input": {
+      "lines": [{ "value": "9000.00", "tax": "0", "weightKg": "100" }],
+      "fees": "2000.00",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "weight",
+      "fallback": null,
+      "lines": [
+        {
+          "fees": "2000.00",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "9000.00",
+          "cost": "11000.00"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a pcs line makes the whole invoice split by value",
+    "input": {
+      "lines": [
+        { "value": "500.00", "tax": "0", "weightKg": "10" },
+        { "value": "100.00", "tax": "0", "weightKg": null }
+      ],
+      "fees": "60.00",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "value",
+      "fallback": "not_weighable",
+      "lines": [
+        { "fees": "50.00", "discount": "0.00", "tax": "0.00", "goods": "500.00", "cost": "550.00" },
+        { "fees": "10.00", "discount": "0.00", "tax": "0.00", "goods": "100.00", "cost": "110.00" }
+      ]
+    }
+  },
+  {
+    "name": "paise rounding adds up exactly; the spare paisa goes to the first tied line",
+    "input": {
+      "lines": [
+        { "value": "100.00", "tax": "0", "weightKg": "1" },
+        { "value": "100.00", "tax": "0", "weightKg": "1" },
+        { "value": "100.00", "tax": "0", "weightKg": "1" }
+      ],
+      "fees": "100.00",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "value"
+    },
+    "expected": {
+      "basis": "value",
+      "fallback": null,
+      "lines": [
+        { "fees": "33.34", "discount": "0.00", "tax": "0.00", "goods": "100.00", "cost": "133.34" },
+        { "fees": "33.33", "discount": "0.00", "tax": "0.00", "goods": "100.00", "cost": "133.33" },
+        { "fees": "33.33", "discount": "0.00", "tax": "0.00", "goods": "100.00", "cost": "133.33" }
+      ]
+    }
+  },
+  {
+    "name": "bill discount by value; GST claimable so it stays out of cost",
+    "input": {
+      "lines": [
+        { "value": "1000.00", "tax": "50.00", "weightKg": "10" },
+        { "value": "3000.00", "tax": "150.00", "weightKg": "30" }
+      ],
+      "fees": "0",
+      "discount": "100.00",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "weight",
+      "fallback": null,
+      "lines": [
+        { "fees": "0.00", "discount": "25.00", "tax": "0.00", "goods": "975.00", "cost": "975.00" },
+        {
+          "fees": "0.00",
+          "discount": "75.00",
+          "tax": "0.00",
+          "goods": "2925.00",
+          "cost": "2925.00"
+        }
+      ]
+    }
+  },
+  {
+    "name": "same bill, GST not claimable so it is part of cost",
+    "input": {
+      "lines": [
+        { "value": "1000.00", "tax": "50.00", "weightKg": "10" },
+        { "value": "3000.00", "tax": "150.00", "weightKg": "30" }
+      ],
+      "fees": "0",
+      "discount": "100.00",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": true,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "weight",
+      "fallback": null,
+      "lines": [
+        {
+          "fees": "0.00",
+          "discount": "25.00",
+          "tax": "50.00",
+          "goods": "975.00",
+          "cost": "1025.00"
+        },
+        {
+          "fees": "0.00",
+          "discount": "75.00",
+          "tax": "150.00",
+          "goods": "2925.00",
+          "cost": "3075.00"
+        }
+      ]
+    }
+  },
+  {
+    "name": "rates include GST: goods value is taken before GST",
+    "input": {
+      "lines": [{ "value": "1050.00", "tax": "50.00", "weightKg": "10" }],
+      "fees": "0",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": true,
+      "taxIsCost": false,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "weight",
+      "fallback": null,
+      "lines": [
+        { "fees": "0.00", "discount": "0.00", "tax": "0.00", "goods": "1000.00", "cost": "1000.00" }
+      ]
+    }
+  },
+  {
+    "name": "bill-level GST on a kachha purchase is shared by value and counted as cost",
+    "input": {
+      "lines": [
+        { "value": "1000.00", "tax": "0", "weightKg": "10" },
+        { "value": "2000.00", "tax": "0", "weightKg": "20" }
+      ],
+      "fees": "30.00",
+      "discount": "0",
+      "billTax": "180.00",
+      "taxesIncluded": false,
+      "taxIsCost": true,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "weight",
+      "fallback": null,
+      "lines": [
+        {
+          "fees": "10.00",
+          "discount": "0.00",
+          "tax": "60.00",
+          "goods": "1000.00",
+          "cost": "1070.00"
+        },
+        {
+          "fees": "20.00",
+          "discount": "0.00",
+          "tax": "120.00",
+          "goods": "2000.00",
+          "cost": "2140.00"
+        }
+      ]
+    }
+  },
+  {
+    "name": "weights all zero: falls back to value",
+    "input": {
+      "lines": [
+        { "value": "100.00", "tax": "0", "weightKg": "0" },
+        { "value": "300.00", "tax": "0", "weightKg": "0" }
+      ],
+      "fees": "40.00",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "value",
+      "fallback": "no_weight",
+      "lines": [
+        { "fees": "10.00", "discount": "0.00", "tax": "0.00", "goods": "100.00", "cost": "110.00" },
+        { "fees": "30.00", "discount": "0.00", "tax": "0.00", "goods": "300.00", "cost": "330.00" }
+      ]
+    }
+  },
+  {
+    "name": "no weight and no value: fees split equally",
+    "input": {
+      "lines": [
+        { "value": "0", "tax": "0", "weightKg": null },
+        { "value": "0", "tax": "0", "weightKg": null }
+      ],
+      "fees": "10.00",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "equal",
+      "fallback": "no_value",
+      "lines": [
+        { "fees": "5.00", "discount": "0.00", "tax": "0.00", "goods": "0.00", "cost": "5.00" },
+        { "fees": "5.00", "discount": "0.00", "tax": "0.00", "goods": "0.00", "cost": "5.00" }
+      ]
+    }
+  },
+  {
+    "name": "a single paisa goes to the heavier line",
+    "input": {
+      "lines": [
+        { "value": "10.00", "tax": "0", "weightKg": "1" },
+        { "value": "10.00", "tax": "0", "weightKg": "2" }
+      ],
+      "fees": "0.01",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "weight",
+      "fallback": null,
+      "lines": [
+        { "fees": "0.00", "discount": "0.00", "tax": "0.00", "goods": "10.00", "cost": "10.00" },
+        { "fees": "0.01", "discount": "0.00", "tax": "0.00", "goods": "10.00", "cost": "10.01" }
+      ]
+    }
+  }
+]

@@ -1,0 +1,39 @@
+{
+  "name": "billdrop-api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "NODE_ENV=development bun --watch src/main.ts --role=api",
+    "start": "bun run src/main.ts --role=api",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "dev:buckets": "bun scripts/ensure-buckets.ts",
+    "db:generate": "drizzle-kit generate",
+    "migrate": "bun run src/platform/db/migrate.ts",
+    "seed": "bun run src/seed/seed.ts",
+    "contract:build": "bun scripts/contract-build.ts",
+    "eval": "echo 'eval: not implemented until phase A8'"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "decimal.js": "^10.6.0",
+    "drizzle-orm": "^0.45.4",
+    "exceljs": "^4.4.0",
+    "hono": "^4.13.14",
+    "jose": "^6.2.14",
+    "pg-boss": "^12.38.0",
+    "pino": "^10.4.0",
+    "postgres": "^3.4.9",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.4",
+    "@types/archiver": "^8.0.0",
+    "@types/bun": "^1.4.4",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "^7.0.2"
+  }
+}

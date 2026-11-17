@@ -1,0 +1,121 @@
+name: billsnap-lightsail
+
+x-api: &api
+  image: ${IMAGE_TAG:-billsnap-api:local}
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  command: ["bun", "run", "src/main.ts", "--role=api"]
+  env_file:
+    - path: .env
+      required: false
+    - path: ../.env
+      required: false
+  restart: unless-stopped
+  stop_grace_period: 35s
+  depends_on:
+    postgres:
+      condition: service_healthy
+  healthcheck:
+    test:
+      - CMD
+      - bun
+      - -e
+      - "fetch('http://localhost:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 15s
+  deploy:
+    resources:
+      limits:
+        memory: 180M
+  logging: &logging
+    driver: json-file
+    options: { max-size: "50m", max-file: "3" }
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./Caddyfile.lightsail:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api1
+    deploy:
+      resources:
+        limits:
+          memory: 40M
+    logging: *logging
+
+  api1:
+    <<: *api
+
+  worker:
+    image: ${IMAGE_TAG:-billsnap-api:local}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["bun", "run", "src/main.ts", "--role=worker"]
+    env_file:
+    - path: .env
+      required: false
+    - path: ../.env
+      required: false
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 200M
+    stop_grace_period: 75s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    shm_size: 64m
+    env_file:
+    - path: .env
+      required: false
+    - path: ../.env
+      required: false
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres.conf:/etc/postgresql/postgresql.conf:ro
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - shared_buffers=32MB
+      - -c
+      - effective_cache_size=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=30
+    deploy:
+      resources:
+        limits:
+          memory: 180M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+
+volumes:
+  pg_data: {}
+  caddy_data: {}
+  caddy_config: {}

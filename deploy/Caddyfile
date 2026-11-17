@@ -1,0 +1,43 @@
+# Domain comes from the API_DOMAIN env var (set on the caddy service).
+# TODO: serve invite links (/i/*) and .well-known App Links / Universal Links files from a static dir.
+
+(proxy) {
+	reverse_proxy api1:3000 api2:3000 {
+		lb_policy round_robin
+		lb_try_duration 5s
+		health_uri /ready
+		health_interval 5s
+		health_timeout 2s
+		health_status 2xx
+	}
+}
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	# /metrics is internal only.
+	respond /metrics* 404
+
+	# Bun buffers multipart in memory (SEC-5): 50 MB only where uploads happen.
+	handle /v1/bills* {
+		request_body {
+			max_size 50MB
+		}
+		import proxy
+	}
+
+	handle {
+		request_body {
+			max_size 1MB
+		}
+		import proxy
+	}
+}
