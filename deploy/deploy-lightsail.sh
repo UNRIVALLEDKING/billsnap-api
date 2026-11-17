@@ -7,6 +7,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Ensure .env exists so environment is loaded
+if [ ! -f .env ] && [ -f .env.lightsail.example ]; then
+  echo ">> creating initial .env from template..."
+  cp .env.lightsail.example .env
+fi
+
 COMPOSE=(docker compose -f docker-compose.lightsail.yml)
 
 ready() {
@@ -24,7 +30,14 @@ else
 fi
 
 echo ">> starting postgres..."
-"${COMPOSE[@]}" up -d --wait postgres
+if ! "${COMPOSE[@]}" up -d --wait postgres; then
+  echo "!! Postgres startup failed. Checking logs..." >&2
+  "${COMPOSE[@]}" logs postgres >&2
+  echo ">> removing corrupt uninitialized volume and retrying postgres..."
+  "${COMPOSE[@]}" rm -s -f -v postgres || true
+  docker volume rm -f billsnap-lightsail_pg_data || true
+  "${COMPOSE[@]}" up -d --wait postgres
+fi
 
 echo ">> running database migrations..."
 "${COMPOSE[@]}" run --rm --no-deps api1 bun run migrate

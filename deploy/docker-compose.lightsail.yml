@@ -6,6 +6,19 @@ x-api: &api
     context: ..
     dockerfile: Dockerfile
   command: ["bun", "run", "src/main.ts", "--role=api"]
+  environment:
+    NODE_ENV: ${NODE_ENV:-development}
+    PORT: ${PORT:-3000}
+    DATABASE_URL: ${DATABASE_URL:-postgres://billsnap:billsnap_secure_pass_2026!@postgres:5432/billsnap}
+    DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-true}
+    DEMO_EMAIL: ${DEMO_EMAIL:-demo@billsnap.app}
+    DEMO_PASSWORD: ${DEMO_PASSWORD:-Demo@12345}
+    JWT_SECRET: ${JWT_SECRET:-billsnap_jwt_secret_token_testing_lightsail_key_32chars}
+    S3_ENDPOINT: ${S3_ENDPOINT:-http://172.17.0.1:8333}
+    R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-seaweed_admin}
+    R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-seaweed_admin_secret}
+    R2_BUCKET: ${R2_BUCKET:-billsnap}
+    GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   env_file:
     - path: .env
       required: false
@@ -61,6 +74,19 @@ services:
       context: ..
       dockerfile: Dockerfile
     command: ["bun", "run", "src/main.ts", "--role=worker"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL:-postgres://billsnap:billsnap_secure_pass_2026!@postgres:5432/billsnap}
+      DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-true}
+      DEMO_EMAIL: ${DEMO_EMAIL:-demo@billsnap.app}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-Demo@12345}
+      JWT_SECRET: ${JWT_SECRET:-billsnap_jwt_secret_token_testing_lightsail_key_32chars}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://172.17.0.1:8333}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-seaweed_admin}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-seaweed_admin_secret}
+      R2_BUCKET: ${R2_BUCKET:-billsnap}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     env_file:
       - path: .env
         required: false
@@ -82,6 +108,10 @@ services:
     image: postgres:17
     restart: unless-stopped
     shm_size: 64m
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-billsnap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-billsnap_secure_pass_2026!}
+      POSTGRES_DB: ${POSTGRES_DB:-billsnap}
     env_file:
       - path: .env
         required: false
@@ -89,11 +119,10 @@ services:
         required: false
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./postgres.conf:/etc/postgresql/postgresql.conf:ro
     command:
       - postgres
       - -c
-      - config_file=/etc/postgresql/postgresql.conf
+      - shared_preload_libraries=pg_stat_statements
       - -c
       - shared_buffers=32MB
       - -c
@@ -109,10 +138,10 @@ services:
         limits:
           memory: 180M
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-billsnap} -d $${POSTGRES_DB:-billsnap}"]
+      interval: 3s
       timeout: 3s
-      retries: 10
+      retries: 15
     logging: *logging
 
 volumes:
