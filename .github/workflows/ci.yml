@@ -41,7 +41,13 @@ jobs:
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=billdrop -e MINIO_ROOT_PASSWORD=billdrop-dev-secret \
             cgr.dev/chainguard/minio:latest server /data
-          curl -sf --retry 30 --retry-delay 1 --retry-connrefused http://localhost:9000/minio/health/live
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+              echo "MinIO is healthy"
+              break
+            fi
+            sleep 1
+          done
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run lint
