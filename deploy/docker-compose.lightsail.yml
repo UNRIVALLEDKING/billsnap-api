@@ -62,10 +62,10 @@ services:
       dockerfile: Dockerfile
     command: ["bun", "run", "src/main.ts", "--role=worker"]
     env_file:
-    - path: .env
-      required: false
-    - path: ../.env
-      required: false
+      - path: .env
+        required: false
+      - path: ../.env
+        required: false
     restart: unless-stopped
     deploy:
       replicas: 1
@@ -83,10 +83,10 @@ services:
     restart: unless-stopped
     shm_size: 64m
     env_file:
-    - path: .env
-      required: false
-    - path: ../.env
-      required: false
+      - path: .env
+        required: false
+      - path: ../.env
+        required: false
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./postgres.conf:/etc/postgresql/postgresql.conf:ro
