@@ -50,6 +50,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
@@ -77,6 +80,7 @@ jobs:
           SSH_USER: ${{ secrets.LIGHTSAIL_USER || 'ubuntu' }}
           TAG: ${{ needs.build.outputs.tag }}
           OWNER: ${{ needs.build.outputs.owner }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_deploy "${SSH_USER}@${LIGHTSAIL_HOST}" \
-            "cd ${APP_DIR} && chmod +x deploy-lightsail.sh && GHCR_OWNER=${OWNER} TAG=${TAG} ./deploy-lightsail.sh"
+            "echo '${GH_TOKEN}' | docker login ghcr.io -u '${OWNER}' --password-stdin && cd ${APP_DIR} && chmod +x deploy-lightsail.sh && GHCR_OWNER=${OWNER} TAG=${TAG} ./deploy-lightsail.sh"
