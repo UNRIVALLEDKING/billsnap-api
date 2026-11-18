@@ -19,6 +19,14 @@ if [ -f .env ] && grep -q "172.17.0.1:8333" .env; then
   sed -i 's|http://172.17.0.1:8333|http://minio:9000|g' .env
 fi
 
+# Export all variables from .env into shell environment
+if [ -f .env ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . ./.env
+  set +a
+fi
+
 COMPOSE=(docker compose -f docker-compose.lightsail.yml)
 
 ready() {
