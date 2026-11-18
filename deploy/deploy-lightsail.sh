@@ -13,6 +13,12 @@ if [ ! -f .env ] && [ -f .env.lightsail.example ]; then
   cp .env.lightsail.example .env
 fi
 
+# Auto-migrate legacy 172.17.0.1:8333 (missing SeaweedFS) to internal MinIO service
+if [ -f .env ] && grep -q "172.17.0.1:8333" .env; then
+  echo ">> migrating legacy S3_ENDPOINT from 172.17.0.1:8333 to http://minio:9000 in .env..."
+  sed -i 's|http://172.17.0.1:8333|http://minio:9000|g' .env
+fi
+
 COMPOSE=(docker compose -f docker-compose.lightsail.yml)
 
 ready() {
@@ -39,8 +45,14 @@ if ! "${COMPOSE[@]}" up -d --wait postgres; then
   "${COMPOSE[@]}" up -d --wait postgres
 fi
 
+echo ">> starting minio storage..."
+"${COMPOSE[@]}" up -d minio
+
 echo ">> running database migrations..."
 "${COMPOSE[@]}" run --rm --no-deps api1 bun run migrate
+
+echo ">> ensuring storage bucket exists..."
+"${COMPOSE[@]}" run --rm --no-deps api1 bun scripts/ensure-lightsail-bucket.ts
 
 echo ">> starting api1..."
 "${COMPOSE[@]}" up -d --no-deps --wait api1

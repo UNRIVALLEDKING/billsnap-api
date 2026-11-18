@@ -6,6 +6,7 @@ import { createDatabase } from "./platform/db/client";
 import { createLogger } from "./platform/logger";
 import { Metrics, registerQueueGauge, startMetricsServer } from "./platform/metrics";
 import { createPgBossQueue } from "./platform/queue/pgboss";
+import { ensureBucket } from "./platform/storage/ensure-bucket";
 import { createStorage } from "./platform/storage/r2";
 import { startWorker } from "./worker";
 
@@ -50,6 +51,19 @@ if (role === "api") {
       : undefined;
   if (demo) logger.warn("DEMO LOGIN ENABLED: temporary, never use in production");
   const storage = createStorage(config);
+  if (config.S3_ENDPOINT) {
+    try {
+      await ensureBucket({
+        endpoint: config.S3_ENDPOINT,
+        accessKeyId: config.R2_ACCESS_KEY_ID,
+        secretAccessKey: config.R2_SECRET_ACCESS_KEY,
+        bucket: config.R2_BUCKET,
+      });
+      logger.info({ bucket: config.R2_BUCKET }, "storage bucket verified");
+    } catch (err) {
+      logger.warn({ err, bucket: config.R2_BUCKET }, "could not ensure storage bucket on startup");
+    }
+  }
   // The API enqueues extraction jobs (inside the upload transaction), so it needs a started queue too.
   const queue = createPgBossQueue({ url: config.DATABASE_URL, log: logger });
   await queue.start();

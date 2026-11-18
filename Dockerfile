@@ -16,6 +16,7 @@ COPY --from=deps --chown=bun:bun /app/node_modules ./node_modules
 COPY --chown=bun:bun package.json bun.lock tsconfig.json ./
 COPY --chown=bun:bun src ./src
 COPY --chown=bun:bun drizzle ./drizzle
+COPY --chown=bun:bun scripts ./scripts
 USER bun
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
