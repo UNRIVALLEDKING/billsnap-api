@@ -87,6 +87,14 @@ done
 [ "$ok" = 1 ] || { echo "FAILED: api1 not ready" >&2; exit 1; }
 
 echo ">> testing reverse proxy endpoint on port 8002..."
-curl -fsS --retry 5 --retry-delay 2 "http://localhost:8002/ready" >/dev/null
+caddy_ok=0
+for _ in $(seq 1 15); do
+  if curl -fsS "http://localhost:8002/ready" >/dev/null 2>&1; then
+    caddy_ok=1
+    break
+  fi
+  sleep 2
+done
+[ "$caddy_ok" = 1 ] || { echo "FAILED: caddy endpoint on port 8002 not ready" >&2; exit 1; }
 
 echo ">> successfully deployed BillSnap on port 8002!"
