@@ -34,8 +34,15 @@ ready() {
     "fetch('http://localhost:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 }
 
-if [ -n "${IMAGE_TAG:-}" ] || ([ -n "${TAG:-}" ] && [ -n "${GHCR_OWNER:-}" ]); then
-  export IMAGE_TAG="${IMAGE_TAG:-ghcr.io/${GHCR_OWNER}/billdrop-api:${TAG}}"
+if [ -z "${IMAGE_TAG:-}" ]; then
+  if [ -n "${TAG:-}" ] && [ -n "${GHCR_OWNER:-}" ]; then
+    export IMAGE_TAG="ghcr.io/${GHCR_OWNER}/billdrop-api:${TAG}"
+  elif [ ! -f Dockerfile ] && [ ! -f ../Dockerfile ]; then
+    export IMAGE_TAG="ghcr.io/${GHCR_OWNER:-unrivalledking}/billdrop-api:latest"
+  fi
+fi
+
+if [ -n "${IMAGE_TAG:-}" ]; then
   echo ">> pulling prebuilt images for $IMAGE_TAG..."
   "${COMPOSE[@]}" pull api1 worker
 else

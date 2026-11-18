@@ -1,7 +1,7 @@
 name: billsnap-lightsail
 
 x-api: &api
-  image: ${IMAGE_TAG:-billsnap-api:local}
+  image: ${IMAGE_TAG:-ghcr.io/unrivalledking/billdrop-api:latest}
   build:
     context: ..
     dockerfile: Dockerfile
@@ -89,7 +89,7 @@ services:
     <<: *api
 
   worker:
-    image: ${IMAGE_TAG:-billsnap-api:local}
+    image: ${IMAGE_TAG:-ghcr.io/unrivalledking/billdrop-api:latest}
     build:
       context: ..
       dockerfile: Dockerfile
