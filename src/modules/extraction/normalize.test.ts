@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   canonicalUnit,
+  isOwnParty,
+  normalizeDeduction,
   normalizeExtraction,
   normalizeInvoiceNumber,
   normalizeLine,
@@ -251,6 +253,64 @@ describe("normalizeExtraction", () => {
     expect(l?.rate).toBe("50.0000");
     expect(l?.amount).toBe("5750.00");
     expect(l?.flags).not.toContain("math_line");
+    expect([l?.packCount, l?.packUnit]).toEqual(["3.000", "box"]);
+  });
+
+  test("container count from package_count / package_unit, unit is what the rate applies to", () => {
+    // Bill #17550: "E cucumber 4 BOX 150 x 45 = 6750".
+    const l = normalizeLine(
+      line({
+        description: "E cucumber",
+        quantity: "150",
+        unit: "kg",
+        rate: "45",
+        amount: "6750",
+        package_count: "4",
+        package_unit: "BOX",
+      }),
+    );
+    expect([l?.quantity, l?.unit, l?.amount, l?.packCount, l?.packUnit]).toEqual([
+      "150.000",
+      "kg",
+      "6750.00",
+      "4.000",
+      "box",
+    ]);
+    // Baby corn: 90 packets at 90 in 2 boxes stays in pcs.
+    const corn = normalizeLine(
+      line({
+        description: "Baby corn",
+        quantity: "90",
+        unit: "pcs",
+        rate: "90",
+        amount: "8100",
+        package_count: "2",
+        package_unit: "boxes",
+      }),
+    );
+    expect([corn?.quantity, corn?.unit, corn?.packCount, corn?.packUnit]).toEqual([
+      "90.000",
+      "pcs",
+      "2.000",
+      "box",
+    ]);
+  });
+
+  test("a container count left in the text is still picked up", () => {
+    const l = normalizeLine(
+      line({
+        description: "E CUCUMBER 4 BOX",
+        quantity: "150",
+        unit: "kg",
+        rate: "45",
+        amount: "6750",
+      }),
+    );
+    expect([l?.packCount, l?.packUnit]).toEqual(["4.000", "box"]);
+    const none = normalizeLine(
+      line({ description: "Guava", quantity: "1", rate: "150", amount: "150" }),
+    );
+    expect([none?.packCount, none?.packUnit]).toEqual([null, null]);
   });
 
   test("extracts structured charges and calculates otherCharges total", () => {
@@ -271,6 +331,61 @@ describe("normalizeExtraction", () => {
     expect(b.charges[1]?.amount).toBe("240.00");
     expect(b.otherCharges).toBe("490.00");
     expect(b.flags).not.toContain("math_total");
+  });
+});
+
+describe("deductions from an earlier bill", () => {
+  test('"Less Broccoli 27 x 70 = 1890" is a credit line, not a discount, and the total reconciles', () => {
+    const b = normalizeExtraction(
+      bill({
+        line_items: [
+          { description: "Baby corn", quantity: "90", unit: "pcs", rate: "90", amount: "8100" },
+        ],
+        deductions: [
+          { description: "Less Broccoli", quantity: "27", unit: "kg", rate: "70", amount: "-1890" },
+        ],
+        other_charges: [{ label: "Station charge", amount: "1300" }],
+        discount_total: null,
+        grand_total: "7510",
+      }),
+      NOW,
+    );
+    expect(b.discountTotal).toBe("0.00");
+    expect(b.flags).not.toContain("math_total");
+    expect(
+      b.lines.map((l) => [l.description, l.quantity, l.unit, l.rate, l.amount, l.lineKind]),
+    ).toEqual([
+      ["Baby corn", "90.000", "pcs", "90.0000", "8100.00", "goods"],
+      ["Broccoli", "27.000", "kg", "70.0000", "1890.00", "credit"],
+    ]);
+    expect(b.lines[1]?.flags).toEqual([]);
+  });
+
+  test("Hindi and other words for a deduction are dropped from the item name", () => {
+    for (const word of ["Minus", "KAM", "ghata:", "वापसी", "Return -"]) {
+      const l = normalizeDeduction({
+        description: `${word} Tomato`,
+        quantity: "5",
+        unit: "kg",
+        rate: "20",
+        amount: "100",
+      });
+      expect([l?.description, l?.amount, l?.lineKind]).toEqual(["Tomato", "100.00", "credit"]);
+    }
+    // A name that only starts like one is kept.
+    expect(
+      normalizeDeduction({
+        description: "Lessar beans",
+        quantity: "1",
+        unit: "kg",
+        rate: "1",
+        amount: "1",
+      })?.description,
+    ).toBe("Lessar beans");
+  });
+
+  test("older reads without deductions still parse", () => {
+    expect(extractionOutput.parse({ is_bill: true }).deductions).toEqual([]);
   });
 });
 
@@ -301,5 +416,117 @@ describe("dates", () => {
     const b = normalizeExtraction(bill(), NOW);
     expect(b.billDate).toBeNull();
     expect(b.flags).not.toContain("date_suspect");
+  });
+});
+
+describe("own business on the bill (CUSTOMER_SPECS_PLAN B6)", () => {
+  const OWN_GSTIN = "27AAPFU0939F1ZV";
+  const own = {
+    name: "Samavaya Agro Pvt Ltd",
+    gstin: OWN_GSTIN,
+    aliases: ["Samavaya", "Samavaya Fresh"],
+  };
+  const zepto = { name: "Zepto Marketplace Pvt Ltd", gstin: "29AAGCB7383J1Z4" };
+  const farm = { name: "Krishna Farms", gstin: "27AAACR5055K1Z7" };
+
+  test("isOwnParty: GSTIN decides when both have one, else name or alias", () => {
+    expect(isOwnParty({ name: "Anything", gstin: OWN_GSTIN.toLowerCase() }, own)).toBe(true);
+    expect(isOwnParty({ name: "Samavaya", gstin: "29AAGCB7383J1Z4" }, own)).toBe(false);
+    expect(isOwnParty({ name: "SAMAVAYA FRESH", gstin: null }, own)).toBe(true);
+    expect(isOwnParty({ name: "Samavaya Agro Private Limited", gstin: null }, own)).toBe(true);
+    expect(isOwnParty({ name: "Samavaya Traders", gstin: null }, own)).toBe(false);
+    expect(isOwnParty({ name: "", gstin: null }, own)).toBe(false);
+  });
+
+  test("sale: the seller is us by alias, so the buyer is the counterparty", () => {
+    const b = normalizeExtraction(
+      bill({
+        seller: { name: "SAMAVAYA", gstin: null },
+        buyer: zepto,
+        counterparty: { name: "Samavaya", gstin: null },
+      }),
+      NOW,
+      { billType: "sale", own },
+    );
+    expect([b.vendorName, b.gstin]).toEqual([zepto.name, zepto.gstin]);
+    expect(b.flags).not.toContain("seller_unknown");
+    expect(b.extractedParties).toEqual({
+      seller: { name: "SAMAVAYA", gstin: null },
+      buyer: zepto,
+    });
+  });
+
+  test("purchase: the buyer is us by GSTIN, so the seller is the counterparty", () => {
+    const b = normalizeExtraction(
+      bill({ seller: farm, buyer: { name: "S. Agro", gstin: OWN_GSTIN } }),
+      NOW,
+      { billType: "purchase", own },
+    );
+    expect([b.vendorName, b.gstin]).toEqual([farm.name, farm.gstin]);
+    expect(b.flags).toEqual([]);
+  });
+
+  test("added as a purchase but we are the seller: the buyer, flagged looks_like_sale", () => {
+    const b = normalizeExtraction(
+      bill({ seller: { name: "Samavaya Fresh", gstin: OWN_GSTIN }, buyer: zepto }),
+      NOW,
+      { billType: "purchase", own },
+    );
+    expect(b.vendorName).toBe(zepto.name);
+    expect(b.flags).toContain("looks_like_sale");
+  });
+
+  test("added as a sale but we are the buyer: the seller, flagged looks_like_purchase", () => {
+    const b = normalizeExtraction(
+      bill({ seller: farm, buyer: { name: "Samavaya", gstin: null } }),
+      NOW,
+      {
+        billType: "sale",
+        own,
+      },
+    );
+    expect(b.vendorName).toBe(farm.name);
+    expect(b.flags).toContain("looks_like_purchase");
+  });
+
+  test("neither side is us: chosen by type, and a sale is flagged seller_unknown", () => {
+    const parties = { seller: farm, buyer: zepto };
+    const sale = normalizeExtraction(bill(parties), NOW, { billType: "sale", own });
+    expect(sale.vendorName).toBe(zepto.name);
+    expect(sale.flags).toContain("seller_unknown");
+    const purchase = normalizeExtraction(bill(parties), NOW, { billType: "purchase", own });
+    expect(purchase.vendorName).toBe(farm.name);
+    expect(purchase.flags).not.toContain("seller_unknown");
+  });
+
+  test("older reads without sides keep the counterparty, unless it is us", () => {
+    const old = normalizeExtraction(
+      bill({ counterparty: { name: "Krishna Farms", gstin: null } }),
+      NOW,
+      {
+        billType: "purchase",
+        own,
+      },
+    );
+    expect(old.vendorName).toBe("Krishna Farms");
+    expect(old.extractedParties).toEqual({ seller: null, buyer: null });
+    const self = normalizeExtraction(
+      bill({ counterparty: { name: "Samavaya", gstin: null } }),
+      NOW,
+      {
+        billType: "sale",
+        own,
+      },
+    );
+    expect([self.vendorName, self.gstin]).toEqual(["", null]);
+  });
+
+  test("without context the counterparty is read as before", () => {
+    const b = normalizeExtraction(
+      bill({ seller: farm, buyer: zepto, counterparty: { name: " Krishna  Farms ", gstin: null } }),
+      NOW,
+    );
+    expect(b.vendorName).toBe("Krishna Farms");
+    expect(b.flags).toEqual([]);
   });
 });

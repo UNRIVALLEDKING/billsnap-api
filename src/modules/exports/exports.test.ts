@@ -181,7 +181,7 @@ describe("Streaming Multi-sheet Excel Writer (xlsx.writer.ts)", () => {
     const itemized = workbook.getWorksheet("Itemized");
 
     // Summary totals row is row 4 (1 header + 2 data + 1 total)
-    const summaryTotalCell = summary?.getRow(4).getCell(12).value;
+    const summaryTotalCell = summary?.getRow(4).getCell(16).value;
     // Itemized totals row is row 4 (1 header + 2 data + 1 total)
     const itemizedTotalCell = itemized?.getRow(4).getCell(15).value;
 
@@ -248,7 +248,9 @@ describe("CSV Writer & Zip Bundle (csv.writer.ts)", () => {
     // Escaped commas in vendor name
     expect(csv).toContain('"Mumbai Trading Co., Ltd."');
     // Contains total row at bottom
-    expect(csv).toContain("Total,,,,,,2000.00,180.00,180.00,0.00,0.00,2360.00,");
+    expect(csv).toContain(
+      "Total,,,,,,2000.00,180.00,180.00,0.00,0.00,0.00,0.00,0.00,0.00,2360.00,",
+    );
   });
 
   test("Itemized.csv starts with UTF-8 BOM and includes line totals", () => {

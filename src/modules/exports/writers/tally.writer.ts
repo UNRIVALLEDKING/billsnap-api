@@ -4,6 +4,8 @@ export type TallyBillLine = {
   unit?: string | null | undefined;
   rate: number;
   amount: number;
+  /** "credit": a deduction for an earlier bill. It is posted as a ledger entry, never as stock. */
+  lineKind?: "goods" | "credit" | undefined;
   stockItemName?: string | undefined;
   godownName?: string | undefined;
   batchName?: string | undefined;
@@ -27,6 +29,12 @@ export type TallyBill = {
   igst?: number | null | undefined;
   otherCharges?: number | null | undefined;
   charges?: TallyCharge[] | undefined;
+  /** Bill-level discount. */
+  discount?: number | null | undefined;
+  /** Sum of credits from earlier bills, when no credit lines are given. */
+  credits?: number | null | undefined;
+  /** Invoice numbers of the earlier bills the credits refer to (for the narration). */
+  creditRefs?: string[] | undefined;
   roundOff?: number | null | undefined;
   subtotal?: number | null | undefined;
   total?: number | null | undefined;
@@ -79,6 +87,9 @@ export function formatTallyDate(dateVal: string | Date | null | undefined): stri
   return "20260101";
 }
 
+/** Ledger the credit from an earlier bill is posted to. */
+export const VENDOR_CREDIT_LEDGER = "Vendor credit (earlier bill)";
+
 export function resolveChargeLedgerName(
   charge: { label: string; category?: string | null | undefined },
   isPurchase: boolean,
@@ -129,7 +140,13 @@ export function generateTallyXml(exportData: ExportData): string {
     let linesTotal = 0;
     const inventoryXml: string[] = [];
 
+    // Credit lines ("Less from earlier bills") are not stock: they are one ledger entry below.
+    const creditLinesTotal = billLines
+      .filter((l) => l.lineKind === "credit")
+      .reduce((s, l) => s + Math.abs(Number(l.amount) || 0), 0);
+
     for (const line of billLines) {
+      if (line.lineKind === "credit") continue;
       const qty = Number(line.quantity) || 0;
       const unit = line.unit ? line.unit.trim() : "pcs";
       const unitEsc = escapeXml(unit);
@@ -175,7 +192,13 @@ export function generateTallyXml(exportData: ExportData): string {
       bill.charges && bill.charges.length > 0
         ? bill.charges.reduce((sum, c) => sum + (Number(c.amount) || 0), 0)
         : Number(bill.otherCharges) || 0;
-    const total = Number(bill.total) || subtotal + cgst + sgst + igst + chargesTotal + roundOff;
+    const discount = Math.abs(Number(bill.discount) || 0);
+    const credits = billLines.some((l) => l.lineKind === "credit")
+      ? creditLinesTotal
+      : Math.abs(Number(bill.credits) || 0);
+    const total =
+      Number(bill.total) ||
+      subtotal + cgst + sgst + igst + chargesTotal - discount - credits + roundOff;
 
     const ledgerXml: string[] = [];
 
@@ -249,6 +272,27 @@ export function generateTallyXml(exportData: ExportData): string {
             </LEDGERENTRIES.LIST>`);
     }
 
+    // Discount: reduces what is payable, so it sits on the party's side (purchase: credit, sale: debit).
+    if (discount > 0.0001) {
+      const discAmt = isPurchase ? discount : -discount;
+      ledgerXml.push(`            <LEDGERENTRIES.LIST>
+              <LEDGERNAME>${isPurchase ? "Discount Received" : "Discount Allowed"}</LEDGERNAME>
+              <ISDEEMEDPOSITIVE>${isPurchase ? "No" : "Yes"}</ISDEEMEDPOSITIVE>
+              <AMOUNT>${discAmt.toFixed(2)}</AMOUNT>
+            </LEDGERENTRIES.LIST>`);
+    }
+
+    // Credit from an earlier bill: sits on the party's side like the discount, so it reduces what is owed.
+    // Purchase: +credit with ISDEEMEDPOSITIVE No, so party (+total) + credit balances goods + tax + charges.
+    if (credits > 0.0001) {
+      const credAmt = isPurchase ? credits : -credits;
+      ledgerXml.push(`            <LEDGERENTRIES.LIST>
+              <LEDGERNAME>${VENDOR_CREDIT_LEDGER}</LEDGERNAME>
+              <ISDEEMEDPOSITIVE>${isPurchase ? "No" : "Yes"}</ISDEEMEDPOSITIVE>
+              <AMOUNT>${credAmt.toFixed(2)}</AMOUNT>
+            </LEDGERENTRIES.LIST>`);
+    }
+
     // Round off ledger entry if roundOff != 0
     if (Math.abs(roundOff) > 0.0001) {
       // In Purchase: positive roundOff increases bill total, so debit is negative.
@@ -261,6 +305,17 @@ export function generateTallyXml(exportData: ExportData): string {
             </LEDGERENTRIES.LIST>`);
     }
 
+    const refs = (bill.creditRefs ?? []).filter(Boolean);
+    const narration =
+      credits > 0.0001
+        ? `
+            <NARRATION>${escapeXml(
+              refs.length > 0
+                ? `Less from earlier bill ${refs.join(", ")}`
+                : "Less from earlier bill",
+            )}</NARRATION>`
+        : "";
+
     const inventoryBlock = inventoryXml.length > 0 ? `\n${inventoryXml.join("\n")}` : "";
     const ledgerBlock = ledgerXml.length > 0 ? `\n${ledgerXml.join("\n")}` : "";
 
@@ -270,7 +325,7 @@ export function generateTallyXml(exportData: ExportData): string {
             <VOUCHERTYPENAME>${vchType}</VOUCHERTYPENAME>
             <VOUCHERNUMBER>${voucherNumber}</VOUCHERNUMBER>
             <PARTYLEDGERNAME>${partyName}</PARTYLEDGERNAME>
-            <PROFORMAVOUCHER>false</PROFORMAVOUCHER>${inventoryBlock}${ledgerBlock}
+            <PROFORMAVOUCHER>false</PROFORMAVOUCHER>${narration}${inventoryBlock}${ledgerBlock}
           </VOUCHER>
         </TALLYMESSAGE>`);
   }

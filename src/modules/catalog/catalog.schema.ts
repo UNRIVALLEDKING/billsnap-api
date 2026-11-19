@@ -3,6 +3,7 @@ import {
   type AnyPgColumn,
   index,
   jsonb,
+  numeric,
   pgEnum,
   pgTable,
   text,
@@ -74,6 +75,13 @@ export const products = pgTable(
     hsnSac: text("hsn_sac"),
     unit: text("unit"),
     masterProductId: uuid("master_product_id"),
+    /**
+     * This party's pack size for the item (docs/CUSTOMER_SPECS_PLAN.md B7): 1 `pack_unit` holds
+     * `pack_qty` `pack_qty_unit`, e.g. 1 box = 0.2 kg. All three set, or all null.
+     */
+    packUnit: text("pack_unit"),
+    packQty: numeric("pack_qty", { precision: 14, scale: 6 }),
+    packQtyUnit: text("pack_qty_unit"),
     mergedIntoId: uuid("merged_into_id").references((): AnyPgColumn => products.id),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

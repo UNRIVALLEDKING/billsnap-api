@@ -2,6 +2,8 @@ export type AiHints = {
   billType: "purchase" | "sale";
   ownGstin?: string;
   ownName: string;
+  /** Other names the business appears under on bills. */
+  ownAliases?: string[];
   ownStateCode?: string;
 };
 

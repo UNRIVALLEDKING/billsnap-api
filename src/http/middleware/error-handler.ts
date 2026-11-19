@@ -23,8 +23,10 @@ function problem(
   code: string,
   detail: string,
   extra: Record<string, string> = {},
+  fields: Record<string, unknown> = {},
 ): Response {
   const body = {
+    ...fields,
     type: `urn:billdrop:problem:${code}`,
     title: TITLES[status] ?? "Error",
     status,
@@ -38,7 +40,8 @@ function problem(
 }
 
 export const errorHandler: ErrorHandler<AppEnv> = (err, c) => {
-  if (err instanceof AppError) return problem(err.status, err.code, err.message, err.headers);
+  if (err instanceof AppError)
+    return problem(err.status, err.code, err.message, err.headers, err.fields);
   if (err instanceof HTTPException) {
     return problem(
       err.status,

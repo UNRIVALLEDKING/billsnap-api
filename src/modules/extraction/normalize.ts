@@ -4,7 +4,9 @@ import type Decimal from "decimal.js";
 import { GST_RATES, isValidGstin } from "../../shared/gst";
 import { newId } from "../../shared/ids";
 import { dec, fmt, round2, sum } from "../../shared/money";
-import type { ExtractedLine, ExtractionOutput } from "./schema";
+import type { ExtractedParties, ExtractedParty } from "../bills/bills.schema";
+import { normalizeVendorName } from "../catalog/normalize";
+import type { ExtractedDeduction, ExtractedLine, ExtractionOutput } from "./schema";
 
 export type NormalizedLine = {
   description: string;
@@ -23,6 +25,11 @@ export type NormalizedLine = {
   sgst: string;
   igst: string;
   cess: string;
+  /** Containers the line came in ("4.000" "box"); both null when none were read. */
+  packCount: string | null;
+  packUnit: string | null;
+  /** "credit" for a deduction from an earlier bill ("Less Broccoli"); its positive amount comes off. */
+  lineKind: "goods" | "credit";
   flags: string[];
 };
 
@@ -54,6 +61,8 @@ export type NormalizedBill = {
   grandTotal: string | null;
   flags: string[];
   lines: NormalizedLine[];
+  /** Seller and buyer as read (null when a side was not read). */
+  extractedParties: ExtractedParties;
 };
 
 /** Parses a printed number: strips currency, Indian grouping and spaces; "-" or blank is null. */
@@ -184,6 +193,47 @@ export function normalizeInvoiceNumber(raw: string): string | null {
 
 const GST_RATE_SET = new Set<string>(GST_RATES);
 
+const PACK_UNITS: Readonly<Record<string, string>> = {
+  box: "box",
+  boxes: "box",
+  bx: "box",
+  carton: "box",
+  cartons: "box",
+  crate: "crate",
+  crates: "crate",
+  bori: "bori",
+  bora: "bori",
+  boris: "bori",
+  peti: "peti",
+  petis: "peti",
+  nag: "nag",
+  nags: "nag",
+  bag: "bag",
+  bags: "bag",
+};
+const PACK_IN_TEXT =
+  /(?:^|[^\d.])(\d+(?:\.\d+)?)\s*(boxes|box|bx|cartons?|crates?|boris|bori|bora|petis|peti|nags|nag|bags?)\b/iu;
+
+/** The container count of a line: package_count / package_unit when read, else "4 BOX" in the text. */
+export function normalizePack(
+  count: string | null,
+  unit: string | null,
+  description: string | null,
+): { packCount: string | null; packUnit: string | null } {
+  const toUnit = (raw: string | null) => {
+    const key = (raw ?? "").toLowerCase().replace(/[\s.]+/gu, "");
+    if (key === "") return "box";
+    return PACK_UNITS[key] ?? (/^\p{L}{1,12}$/u.test(key) ? key : "box");
+  };
+  const n = parseNumber(count)?.abs();
+  if (n?.gt(0)) return { packCount: fmt(n, 3), packUnit: toUnit(unit) };
+  const m = PACK_IN_TEXT.exec(description ?? "");
+  if (m?.[1] && m[2] && dec(m[1]).gt(0)) {
+    return { packCount: fmt(dec(m[1]), 3), packUnit: toUnit(m[2]) };
+  }
+  return { packCount: null, packUnit: null };
+}
+
 export function normalizeLine(l: ExtractedLine): NormalizedLine | null {
   let q = parseNumber(l.quantity);
   let r = parseNumber(l.rate);
@@ -275,16 +325,59 @@ export function normalizeLine(l: ExtractedLine): NormalizedLine | null {
     sgst: tax(l.sgst),
     igst: tax(l.igst),
     cess: tax(l.cess),
+    ...normalizePack(l.package_count, l.package_unit, l.description),
+    lineKind: "goods",
     flags: [...flags],
   };
 }
 
-export function normalizeExtraction(out: ExtractionOutput, now: Date = new Date()): NormalizedBill {
+/** Strips the sign a deduction may be printed with ("-1890", "(1890)"): credits are stored positive. */
+const unsigned = (v: string | null) =>
+  v == null ? null : v.trim().replace(/^[-–(\s]+|[)\s]+$/gu, "");
+
+/**
+ * A deduction from an earlier bill as a credit line: "Less Broccoli 27 x 70 = 1890" becomes Broccoli,
+ * 27 kg at 70, amount 1890, line kind "credit". The leading "Less" / "Minus" / ... word is dropped.
+ */
+export function normalizeDeduction(d: ExtractedDeduction): NormalizedLine | null {
+  const description = (d.description ?? "")
+    .replace(/^\s*(less|minus|kam|ghata|वापसी|return(ed)?)(?![\p{L}\p{M}])[\s:.-]*/iu, "")
+    .trim();
+  const l = normalizeLine({
+    description,
+    hsn_sac: null,
+    quantity: unsigned(d.quantity),
+    unit: d.unit,
+    rate: unsigned(d.rate),
+    discount: null,
+    taxable_value: null,
+    gst_rate: null,
+    cgst: null,
+    sgst: null,
+    igst: null,
+    cess: null,
+    amount: unsigned(d.amount),
+    package_count: null,
+    package_unit: null,
+    uncertain_fields: [],
+  });
+  return l === null ? null : { ...l, packCount: null, packUnit: null, lineKind: "credit" };
+}
+
+export function normalizeExtraction(
+  out: ExtractionOutput,
+  now: Date = new Date(),
+  party?: PartyContext,
+): NormalizedBill {
   const flags = new Set<string>();
-  const lines = out.line_items.map(normalizeLine).filter((l): l is NormalizedLine => l !== null);
+  const goods = out.line_items.map(normalizeLine).filter((l): l is NormalizedLine => l !== null);
+  const credits = out.deductions
+    .map(normalizeDeduction)
+    .filter((l): l is NormalizedLine => l !== null);
+  const lines = [...goods, ...credits];
 
   const taxTotal = (bill: string | null, pick: (l: NormalizedLine) => string) =>
-    parseNumber(bill) ?? sum(lines.map(pick));
+    parseNumber(bill) ?? sum(goods.map(pick));
   const cgst = taxTotal(out.cgst_total, (l) => l.cgst);
   const sgst = taxTotal(out.sgst_total, (l) => l.sgst);
   const igst = taxTotal(out.igst_total, (l) => l.igst);
@@ -307,16 +400,18 @@ export function normalizeExtraction(out: ExtractionOutput, now: Date = new Date(
   const discount = parseNumber(out.discount_total) ?? ZERO;
   const roundOff = parseNumber(out.round_off) ?? ZERO;
   const grand = parseNumber(out.grand_total);
-  const items = sum(lines.map((l) => l.amount));
+  const items = sum(goods.map((l) => l.amount));
+  const credited = sum(credits.map((l) => l.amount));
 
-  const base = items.plus(other).minus(discount).plus(roundOff);
+  const base = items.plus(other).minus(discount).minus(credited).plus(roundOff);
   const withoutTax = grand !== null && base.minus(grand).abs().lte(1);
   const withTax = grand !== null && base.plus(tax).minus(grand).abs().lte(1);
   const taxesIncluded = tax.gt(0) && withoutTax && !withTax;
   if (grand !== null && !withoutTax && !withTax) flags.add("math_total");
 
-  const gstinRaw = (out.counterparty.gstin ?? "").toUpperCase().replace(/\s+/gu, "");
-  const gstin = gstinRaw === "" ? null : gstinRaw;
+  const counterparty = pickCounterparty(out, party);
+  for (const f of counterparty.flags) flags.add(f);
+  const gstin = counterparty.gstin;
   if (gstin !== null && !isValidGstin(gstin)) flags.add("gstin_invalid");
 
   const billDate = parseBillDate(out.date_iso, out.date_raw);
@@ -337,8 +432,9 @@ export function normalizeExtraction(out: ExtractionOutput, now: Date = new Date(
   const subtotal = parseNumber(out.subtotal);
   const pos = (out.place_of_supply ?? "").trim();
   return {
-    vendorName: (out.counterparty.name ?? "").replace(/\s+/gu, " ").trim(),
+    vendorName: counterparty.name,
     gstin,
+    extractedParties: counterparty.parties,
     invoiceNumber,
     invoiceNumberNorm: normalizeInvoiceNumber(invoiceNumber),
     billDate,
@@ -358,4 +454,91 @@ export function normalizeExtraction(out: ExtractionOutput, now: Date = new Date(
     flags: [...flags],
     lines,
   };
+}
+
+// ---- Our own business on the bill (docs/CUSTOMER_SPECS_PLAN.md B6) -----------------------------------
+
+/** The business reading the bill: its name, other names on bills, and GSTIN. */
+export type OwnBusiness = { name: string; gstin: string | null; aliases: readonly string[] };
+
+const cleanGstin = (raw: string | null | undefined): string | null => {
+  const g = (raw ?? "").toUpperCase().replace(/\s+/gu, "");
+  return g === "" ? null : g;
+};
+
+/**
+ * True when a party on a bill is our own business: by GSTIN when both have one (it decides), else by
+ * the normalised name against the business name and its aliases.
+ */
+export function isOwnParty(
+  p: { name: string | null; gstin: string | null },
+  own: OwnBusiness,
+): boolean {
+  const g = cleanGstin(p.gstin);
+  const og = cleanGstin(own.gstin);
+  if (g && og && isValidGstin(g) && isValidGstin(og)) return g === og;
+  const n = normalizeVendorName(p.name ?? "");
+  if (n === "") return false;
+  return [own.name, ...own.aliases].some((a) => normalizeVendorName(a) === n);
+}
+
+/** Who reads the bill and as what: lets the normaliser tell our side from the other party. */
+export type PartyContext = { billType: "purchase" | "sale"; own: OwnBusiness };
+
+const squash = (s: string | null | undefined) => (s ?? "").replace(/\s+/gu, " ").trim();
+
+function cleanParty(
+  p: { name: string | null; gstin: string | null } | null,
+): ExtractedParty | null {
+  if (!p) return null;
+  const name = squash(p.name);
+  const gstin = cleanGstin(p.gstin);
+  return name === "" && gstin === null ? null : { name, gstin };
+}
+
+/**
+ * The bill's other party (docs/CUSTOMER_SPECS_PLAN.md B6). The side that is our business is "us"; the
+ * counterparty is the other side. When neither side is us, it goes by type (sale: buyer, purchase:
+ * seller), flagged `seller_unknown` on a sale. Our side on the "wrong" type is flagged
+ * `looks_like_sale` / `looks_like_purchase`. Without context (or sides) the model's `counterparty`
+ * stands, unless it is our business.
+ */
+export function pickCounterparty(
+  out: ExtractionOutput,
+  ctx?: PartyContext,
+): { name: string; gstin: string | null; flags: string[]; parties: ExtractedParties } {
+  const seller = cleanParty(out.seller);
+  const buyer = cleanParty(out.buyer);
+  const parties = { seller, buyer };
+  const legacy = cleanParty(out.counterparty);
+  const result = (p: ExtractedParty | null, flags: string[] = []) => ({
+    name: p?.name ?? "",
+    gstin: p?.gstin ?? null,
+    flags,
+    parties,
+  });
+  if (!ctx) return result(legacy);
+
+  const us = (p: ExtractedParty | null) => p !== null && isOwnParty(p, ctx.own);
+  const sellerUs = us(seller);
+  const buyerUs = us(buyer);
+  const flags: string[] = [];
+  let chosen: ExtractedParty | null;
+  if (sellerUs && !buyerUs) {
+    chosen = buyer;
+    if (ctx.billType === "purchase") flags.push("looks_like_sale");
+  } else if (buyerUs && !sellerUs) {
+    chosen = seller;
+    if (ctx.billType === "sale") flags.push("looks_like_purchase");
+  } else {
+    chosen = sellerUs ? null : ctx.billType === "sale" ? buyer : seller;
+    if (ctx.billType === "sale" && !sellerUs) flags.push("seller_unknown");
+  }
+  if (chosen === null && legacy && !us(legacy)) chosen = legacy;
+  // The same party read twice: the counterparty block may carry the GSTIN the side missed.
+  if (chosen && chosen.gstin === null && legacy?.gstin && !us(legacy)) {
+    const same = normalizeVendorName(legacy.name) === normalizeVendorName(chosen.name);
+    if (same) chosen = { ...chosen, gstin: legacy.gstin };
+  }
+  return result(chosen, flags);
 }

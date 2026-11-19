@@ -111,6 +111,20 @@ export async function acceptInvite(db: Executor, token: string, userId: string) 
     throw new AppError("already_member", 409, "User is already a member of this business");
   }
 
+  // One business per account: someone who already belongs to a business can't join another.
+  const [other] = await db
+    .select({ businessId: memberships.businessId })
+    .from(memberships)
+    .where(eq(memberships.userId, userId))
+    .limit(1);
+  if (other) {
+    throw new AppError(
+      "business_exists",
+      409,
+      "This account already belongs to a business. Use a different email to join.",
+    );
+  }
+
   await db.insert(memberships).values({
     businessId: invite.businessId,
     userId,

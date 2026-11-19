@@ -5,11 +5,17 @@ import { sanitizeFormula } from "./sanitizer";
 
 export const UTF8_BOM = "\uFEFF";
 
+export const CREDIT_KIND_LABEL = "Credit from earlier bill";
+
+const PLAIN_NUMBER = /^-?[0-9]+([.][0-9]+)?$/;
+
 function escapeCsvField(value: unknown): string {
   if (value === null || value === undefined) {
     return "";
   }
-  const str = typeof value === "string" ? sanitizeFormula(value) : String(value);
+  // A plain negative number (a credit's amount) is data, not a formula: keep its minus sign.
+  const str =
+    typeof value === "string" && !PLAIN_NUMBER.test(value) ? sanitizeFormula(value) : String(value);
   if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
     return `"${str.replaceAll('"', '""')}"`;
   }
@@ -41,6 +47,10 @@ export function generateSummaryCsv(dataset: ExportDataset): string {
     "SGST",
     "IGST",
     "Cess",
+    "Other Charges",
+    "Discount",
+    "Credits (Less from earlier bills)",
+    "Round Off",
     "Total",
     "Status",
   ];
@@ -51,6 +61,10 @@ export function generateSummaryCsv(dataset: ExportDataset): string {
   let sumSgst = 0;
   let sumIgst = 0;
   let sumCess = 0;
+  let sumCharges = 0;
+  let sumDiscount = 0;
+  let sumCredits = 0;
+  let sumRoundOff = 0;
   let sumTotal = 0;
 
   for (const row of dataset.summary) {
@@ -59,6 +73,10 @@ export function generateSummaryCsv(dataset: ExportDataset): string {
     sumSgst += Number(row.sgst) || 0;
     sumIgst += Number(row.igst) || 0;
     sumCess += Number(row.cess) || 0;
+    sumCharges += Number(row.otherCharges) || 0;
+    sumDiscount += Number(row.discount) || 0;
+    sumCredits += Number(row.credits) || 0;
+    sumRoundOff += Number(row.roundOff) || 0;
     sumTotal += Number(row.total) || 0;
 
     const cells = [
@@ -73,6 +91,10 @@ export function generateSummaryCsv(dataset: ExportDataset): string {
       formatMoney(row.sgst),
       formatMoney(row.igst),
       formatMoney(row.cess),
+      formatMoney(row.otherCharges),
+      formatMoney(row.discount),
+      formatMoney(row.credits),
+      formatMoney(row.roundOff),
       formatMoney(row.total),
       row.status,
     ];
@@ -92,6 +114,10 @@ export function generateSummaryCsv(dataset: ExportDataset): string {
     formatMoney(sumSgst),
     formatMoney(sumIgst),
     formatMoney(sumCess),
+    formatMoney(sumCharges),
+    formatMoney(sumDiscount),
+    formatMoney(sumCredits),
+    formatMoney(sumRoundOff),
     formatMoney(sumTotal),
     "",
   ];
@@ -119,6 +145,8 @@ export function generateItemizedCsv(dataset: ExportDataset): string {
     "SGST",
     "IGST",
     "Line Total",
+    "Line Kind",
+    "Credit Ref Invoice",
   ];
   lines.push(headers.map(escapeCsvField).join(","));
 
@@ -131,12 +159,15 @@ export function generateItemizedCsv(dataset: ExportDataset): string {
   let sumLineTotal = 0;
 
   for (const item of dataset.itemized) {
-    sumQty += Number(item.quantity) || 0;
-    sumDiscount += Number(item.discount) || 0;
-    sumTaxable += Number(item.taxableValue) || 0;
-    sumCgst += Number(item.cgst) || 0;
-    sumSgst += Number(item.sgst) || 0;
-    sumIgst += Number(item.igst) || 0;
+    // A credit is a deduction, not goods bought: it stays out of quantity, discount and GST totals.
+    if (item.lineKind !== "credit") {
+      sumQty += Number(item.quantity) || 0;
+      sumDiscount += Number(item.discount) || 0;
+      sumTaxable += Number(item.taxableValue) || 0;
+      sumCgst += Number(item.cgst) || 0;
+      sumSgst += Number(item.sgst) || 0;
+      sumIgst += Number(item.igst) || 0;
+    }
     sumLineTotal += Number(item.lineTotal) || 0;
 
     const cells = [
@@ -155,6 +186,8 @@ export function generateItemizedCsv(dataset: ExportDataset): string {
       formatMoney(item.sgst),
       formatMoney(item.igst),
       formatMoney(item.lineTotal),
+      item.lineKind === "credit" ? CREDIT_KIND_LABEL : "Item",
+      item.creditRefInvoice ?? "",
     ];
     lines.push(cells.map(escapeCsvField).join(","));
   }
@@ -176,6 +209,8 @@ export function generateItemizedCsv(dataset: ExportDataset): string {
     formatMoney(sumSgst),
     formatMoney(sumIgst),
     formatMoney(sumLineTotal),
+    "",
+    "",
   ];
   lines.push(totals.map(escapeCsvField).join(","));
 

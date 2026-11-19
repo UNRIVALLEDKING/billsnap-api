@@ -151,6 +151,20 @@ export const openApiDocument = {
           "404": { description: "Bill not found." },
         },
       },
+      put: {
+        summary: "Edit a Confirmed Bill",
+        description:
+          "Same body as confirm. Rewrites the lines and costing, then rebuilds stock and sale profit of every item on the old and new lines in bill-date order.",
+        security: [{ bearerAuth: [], businessHeader: [] }],
+        parameters: [
+          { name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+        ],
+        responses: {
+          "200": { description: "Bill view after the edit." },
+          "404": { description: "Bill not found." },
+          "409": { description: "wrong_status: the bill is not confirmed." },
+        },
+      },
     },
     "/v1/bills/{id}/confirm": {
       post: {

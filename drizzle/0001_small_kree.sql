@@ -1,0 +1,1 @@
+ALTER TABLE "bill_line_items" ADD COLUMN "goods_value" numeric(14, 2);

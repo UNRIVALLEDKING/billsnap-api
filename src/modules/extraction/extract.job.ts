@@ -93,6 +93,7 @@ export function createExtractHandler(deps: ExtractDeps) {
       files: { mime: string; bytes: Uint8Array }[];
       billType: "purchase" | "sale";
       ownName: string;
+      ownAliases: string[];
       ownGstin?: string;
     },
   ): Promise<{ output: ExtractionOutput; extractionId: string }> {
@@ -100,6 +101,7 @@ export function createExtractHandler(deps: ExtractDeps) {
     const prompt = buildPrompt({
       billType: input.billType,
       ownName: input.ownName,
+      ownAliases: input.ownAliases,
       ...(input.ownGstin && { ownGstin: input.ownGstin }),
     });
     let attempt = 0;
@@ -115,6 +117,7 @@ export function createExtractHandler(deps: ExtractDeps) {
           hints: {
             billType: input.billType,
             ownName: input.ownName,
+            ownAliases: input.ownAliases,
             ...(input.ownGstin && { ownGstin: input.ownGstin }),
           },
           model: current,
@@ -223,7 +226,8 @@ export function createExtractHandler(deps: ExtractDeps) {
         position,
         descriptionRaw: l.description,
         suggestedProductId,
-        masterProductId: autoLinked?.id ?? null,
+        // The party's product decides the stock item (B7: the next invoice maps by itself).
+        masterProductId: vendorMasterId ?? autoLinked?.id ?? null,
         hsnSac: l.hsnSac,
         quantity: l.quantity,
         unit: l.unit,
@@ -237,6 +241,10 @@ export function createExtractHandler(deps: ExtractDeps) {
         igst: l.igst,
         cess: l.cess,
         amount: l.amount,
+        packCount: l.packCount,
+        packUnit: l.packUnit,
+        // Deductions from an earlier bill arrive as credits, in stock by default (the app asks).
+        lineKind: l.lineKind,
         flags: autoLinked ? [...l.flags, "stock_auto_linked"] : l.flags,
       });
     }
@@ -303,6 +311,7 @@ export function createExtractHandler(deps: ExtractDeps) {
         status: "needs_review",
         vendorNameRaw: n.vendorName,
         counterpartyGstin: n.gstin,
+        extractedParties: n.extractedParties,
         suggestedVendorId,
         invoiceNumber: n.invoiceNumber,
         invoiceNumberNorm: n.invoiceNumberNorm,
@@ -353,7 +362,11 @@ export function createExtractHandler(deps: ExtractDeps) {
       return;
     }
     const [biz] = await database.db
-      .select({ name: businesses.name, gstin: businesses.gstin })
+      .select({
+        name: businesses.name,
+        gstin: businesses.gstin,
+        aliases: businesses.nameAliases,
+      })
       .from(businesses)
       .where(eq(businesses.id, data.businessId))
       .limit(1);
@@ -372,6 +385,7 @@ export function createExtractHandler(deps: ExtractDeps) {
         files: loaded,
         billType,
         ownName: biz?.name ?? "",
+        ownAliases: biz?.aliases ?? [],
         ...(biz?.gstin && { ownGstin: biz.gstin }),
       });
     } catch (err) {
@@ -383,7 +397,11 @@ export function createExtractHandler(deps: ExtractDeps) {
       await fail(data.billId, "not_a_bill", result.extractionId);
       return;
     }
-    const normalized = normalizeExtraction(result.output);
+    // Our own business is never the other party (docs/CUSTOMER_SPECS_PLAN.md B6).
+    const normalized = normalizeExtraction(result.output, new Date(), {
+      billType,
+      own: { name: biz?.name ?? "", gstin: biz?.gstin ?? null, aliases: biz?.aliases ?? [] },
+    });
     await database.tx(({ db }) =>
       matchAndWrite(
         db,

@@ -3,13 +3,15 @@ import { z } from "zod";
 import type { AppEnv } from "../../app-env";
 import { parseJsonBody, validate, validationFailed } from "../../http/validate";
 import { AppError } from "../../platform/errors";
-import { fmt } from "../../shared/money";
+import { dec, fmt } from "../../shared/money";
 import { getBillHistory } from "../audit/audit.service";
 import {
   type BillsDeps,
+  type ConfirmInput,
   confirmBill,
   createBill,
   discardBill,
+  editBill,
   getBill,
   getBillFile,
   listBills,
@@ -63,6 +65,37 @@ const confirmLine = z.object({
   igst: num(12, 2),
   cess: num(12, 2),
   flags: z.array(z.string().max(40)).max(20),
+  // Containers the line came in ("2 box"); pack_unit defaults to "box" when only a count is sent.
+  pack_count: num(7, 3).nullable().optional(),
+  pack_unit: z
+    .string()
+    .trim()
+    .min(1)
+    .max(20)
+    .transform((s) => s.toLowerCase())
+    .nullable()
+    .optional(),
+  // "credit": an item deducted for an earlier bill ("Less Broccoli 27 x 70"); purchase bills only.
+  line_kind: z.enum(["goods", "credit"]).optional(),
+  // Credit only: true (default) when it was in stock and goes back to the vendor.
+  credit_in_stock: z.boolean().optional(),
+  credit_ref_bill_id: z.uuid().nullable().optional(),
+  // Stock units in 1 line unit, chosen on review (docs/CUSTOMER_SPECS_PLAN.md B7); absent: the rule decides.
+  stock_factor: num(8, 6)
+    .refine((s) => dec(s).gt(0), "stock_factor must be greater than 0")
+    .nullable()
+    .optional(),
+  // true: also save it as the party product's pack spec (future bills); false/absent: this bill only.
+  save_spec: z.boolean().optional(),
+  // With save_spec: the unit the spec's pack_qty is kept in (e.g. "g"); default the item's stock unit.
+  pack_qty_unit: z
+    .string()
+    .trim()
+    .min(1)
+    .max(20)
+    .transform((s) => s.toLowerCase())
+    .nullable()
+    .optional(),
 });
 
 const isRealDate = (s: string) => {
@@ -75,6 +108,8 @@ const confirmCharge = z.object({
   label: z.string().trim().min(1).max(200),
   amount: num(12, 2),
   category: z.string().trim().max(100).optional().nullable(),
+  // How this charge is shared; absent or null: its fee type's default, else fee_split_basis.
+  basis: z.enum(["weight", "value", "packs"]).nullable().optional(),
 });
 
 const confirmBody = z.object({
@@ -89,7 +124,51 @@ const confirmBody = z.object({
     .nullable(),
   lines: z.array(confirmLine).max(500),
   charges: z.array(confirmCharge).max(100).optional(),
-  fee_split_basis: z.enum(["weight", "value"]).optional(),
+  fee_split_basis: z.enum(["weight", "value", "packs"]).optional(),
+  // Bill discount, shared by value over the goods lines; absent keeps the discount read from the bill.
+  discount_total: num(12, 2).optional(),
+});
+
+const confirmInput = (b: z.infer<typeof confirmBody>): ConfirmInput => ({
+  type: b.type,
+  vendorId: b.vendor_id,
+  vendorName: b.vendor_name,
+  invoiceNumber: b.invoice_number,
+  billDate: b.bill_date,
+  lines: b.lines.map((l) => ({
+    description: l.description,
+    productId: l.product_id,
+    masterProductId: l.master_product_id ?? null,
+    quantity: l.quantity,
+    unit: l.unit,
+    rate: l.rate,
+    discount: l.discount,
+    printedAmount: l.printed_amount,
+    hsnSac: l.hsn_sac,
+    gstRate: l.gst_rate,
+    cgst: l.cgst,
+    sgst: l.sgst,
+    igst: l.igst,
+    cess: l.cess,
+    flags: l.flags,
+    packCount: l.pack_count ?? null,
+    packUnit: l.pack_count == null ? null : (l.pack_unit ?? "box"),
+    lineKind: l.line_kind ?? "goods",
+    creditInStock: l.credit_in_stock ?? true,
+    creditRefBillId: l.credit_ref_bill_id ?? null,
+    stockFactor: l.stock_factor ?? null,
+    saveSpec: l.save_spec ?? false,
+    packQtyUnit: l.pack_qty_unit ?? null,
+  })),
+  charges: b.charges?.map((c) => ({
+    id: c.id ?? crypto.randomUUID(),
+    label: c.label,
+    amount: c.amount,
+    category: c.category ?? null,
+    basis: c.basis ?? null,
+  })),
+  feeSplitBasis: b.fee_split_basis,
+  discountTotal: b.discount_total,
 });
 
 const uuidParam = z.uuid();
@@ -202,43 +281,22 @@ export function billsRoutes(deps: BillsDeps): Hono<AppEnv> {
   routes.post("/:id/confirm", async (c) => {
     const id = idParam(c.req.param("id"));
     const b = await parseJsonBody(confirmBody, c.req.raw);
-    return c.json(
-      await confirmBill(deps, { businessId: c.var.business.id, userId: c.var.user.id }, id, {
-        type: b.type,
-        vendorId: b.vendor_id,
-        vendorName: b.vendor_name,
-        invoiceNumber: b.invoice_number,
-        billDate: b.bill_date,
-        lines: b.lines.map((l) => ({
-          description: l.description,
-          productId: l.product_id,
-          masterProductId: l.master_product_id ?? null,
-          quantity: l.quantity,
-          unit: l.unit,
-          rate: l.rate,
-          discount: l.discount,
-          printedAmount: l.printed_amount,
-          hsnSac: l.hsn_sac,
-          gstRate: l.gst_rate,
-          cgst: l.cgst,
-          sgst: l.sgst,
-          igst: l.igst,
-          cess: l.cess,
-          flags: l.flags,
-        })),
-        charges: b.charges?.map((c) => ({
-          id: c.id ?? crypto.randomUUID(),
-          label: c.label,
-          amount: c.amount,
-          category: c.category ?? null,
-        })),
-        feeSplitBasis: b.fee_split_basis,
-      }),
-    );
+    const ctx = { businessId: c.var.business.id, userId: c.var.user.id };
+    return c.json(await confirmBill(deps, ctx, id, confirmInput(b)));
   });
 
+  // Edit a confirmed bill: same body as confirm; stock and profit of the affected items are rebuilt.
+  routes.put("/:id", async (c) => {
+    const id = idParam(c.req.param("id"));
+    const b = await parseJsonBody(confirmBody, c.req.raw);
+    const ctx = { businessId: c.var.business.id, userId: c.var.user.id };
+    return c.json(await editBill(deps, ctx, id, confirmInput(b)));
+  });
+
+  // Also deletes a confirmed bill: its stock movements are undone.
   routes.post("/:id/discard", async (c) => {
-    await discardBill(deps, c.var.business.id, idParam(c.req.param("id")));
+    const ctx = { businessId: c.var.business.id, userId: c.var.user.id };
+    await discardBill(deps, ctx, idParam(c.req.param("id")));
     return c.body(null, 204);
   });
 

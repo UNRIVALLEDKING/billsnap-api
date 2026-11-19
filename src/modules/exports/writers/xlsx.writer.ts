@@ -1,6 +1,7 @@
 import { PassThrough, type Writable } from "node:stream";
 import ExcelJS from "exceljs";
 import type { ExportDataset } from "../exports.schema";
+import { CREDIT_KIND_LABEL } from "./csv.writer";
 import { sanitizeFormula } from "./sanitizer";
 
 export const CURRENCY_FORMAT = "₹#,##0.00";
@@ -38,6 +39,15 @@ export async function streamXlsxWorkbook(
     { header: "SGST", key: "sgst", width: 14, style: { numFmt: CURRENCY_FORMAT } },
     { header: "IGST", key: "igst", width: 14, style: { numFmt: CURRENCY_FORMAT } },
     { header: "Cess", key: "cess", width: 14, style: { numFmt: CURRENCY_FORMAT } },
+    { header: "Other Charges", key: "otherCharges", width: 16, style: { numFmt: CURRENCY_FORMAT } },
+    { header: "Discount", key: "discount", width: 14, style: { numFmt: CURRENCY_FORMAT } },
+    {
+      header: "Credits (Less from earlier bills)",
+      key: "credits",
+      width: 22,
+      style: { numFmt: CURRENCY_FORMAT },
+    },
+    { header: "Round Off", key: "roundOff", width: 12, style: { numFmt: CURRENCY_FORMAT } },
     { header: "Total", key: "total", width: 18, style: { numFmt: CURRENCY_FORMAT } },
     { header: "Status", key: "status", width: 14 },
   ];
@@ -51,6 +61,10 @@ export async function streamXlsxWorkbook(
   let sumSgst = 0;
   let sumIgst = 0;
   let sumCess = 0;
+  let sumCharges = 0;
+  let sumDiscount = 0;
+  let sumCredits = 0;
+  let sumRoundOff = 0;
   let sumTotal = 0;
 
   for (const row of dataset.summary) {
@@ -59,6 +73,10 @@ export async function streamXlsxWorkbook(
     sumSgst += Number(row.sgst) || 0;
     sumIgst += Number(row.igst) || 0;
     sumCess += Number(row.cess) || 0;
+    sumCharges += Number(row.otherCharges) || 0;
+    sumDiscount += Number(row.discount) || 0;
+    sumCredits += Number(row.credits) || 0;
+    sumRoundOff += Number(row.roundOff) || 0;
     sumTotal += Number(row.total) || 0;
 
     summarySheet
@@ -74,6 +92,10 @@ export async function streamXlsxWorkbook(
         sgst: Number(row.sgst) || 0,
         igst: Number(row.igst) || 0,
         cess: Number(row.cess) || 0,
+        otherCharges: Number(row.otherCharges) || 0,
+        discount: Number(row.discount) || 0,
+        credits: Number(row.credits) || 0,
+        roundOff: Number(row.roundOff) || 0,
         total: Number(row.total) || 0,
         status: sanitizeFormula(row.status),
       })
@@ -93,6 +115,10 @@ export async function streamXlsxWorkbook(
     sgst: sumSgst,
     igst: sumIgst,
     cess: sumCess,
+    otherCharges: sumCharges,
+    discount: sumDiscount,
+    credits: sumCredits,
+    roundOff: sumRoundOff,
     total: sumTotal,
     status: "",
   });
@@ -126,6 +152,8 @@ export async function streamXlsxWorkbook(
     { header: "SGST", key: "sgst", width: 14, style: { numFmt: CURRENCY_FORMAT } },
     { header: "IGST", key: "igst", width: 14, style: { numFmt: CURRENCY_FORMAT } },
     { header: "Line Total", key: "lineTotal", width: 18, style: { numFmt: CURRENCY_FORMAT } },
+    { header: "Line Kind", key: "lineKind", width: 24 },
+    { header: "Credit Ref Invoice", key: "creditRefInvoice", width: 20 },
   ];
 
   const itemizedHeader = itemizedSheet.getRow(1);
@@ -141,12 +169,15 @@ export async function streamXlsxWorkbook(
   let sumItemLineTotal = 0;
 
   for (const item of dataset.itemized) {
-    sumItemQty += Number(item.quantity) || 0;
-    sumItemDiscount += Number(item.discount) || 0;
-    sumItemTaxable += Number(item.taxableValue) || 0;
-    sumItemCgst += Number(item.cgst) || 0;
-    sumItemSgst += Number(item.sgst) || 0;
-    sumItemIgst += Number(item.igst) || 0;
+    // A credit is a deduction, not goods bought: it stays out of quantity, discount and GST totals.
+    if (item.lineKind !== "credit") {
+      sumItemQty += Number(item.quantity) || 0;
+      sumItemDiscount += Number(item.discount) || 0;
+      sumItemTaxable += Number(item.taxableValue) || 0;
+      sumItemCgst += Number(item.cgst) || 0;
+      sumItemSgst += Number(item.sgst) || 0;
+      sumItemIgst += Number(item.igst) || 0;
+    }
     sumItemLineTotal += Number(item.lineTotal) || 0;
 
     itemizedSheet
@@ -166,6 +197,8 @@ export async function streamXlsxWorkbook(
         sgst: Number(item.sgst) || 0,
         igst: Number(item.igst) || 0,
         lineTotal: Number(item.lineTotal) || 0,
+        lineKind: item.lineKind === "credit" ? CREDIT_KIND_LABEL : "Item",
+        creditRefInvoice: item.creditRefInvoice ? sanitizeFormula(item.creditRefInvoice) : "",
       })
       .commit();
   }
@@ -186,6 +219,8 @@ export async function streamXlsxWorkbook(
     sgst: sumItemSgst,
     igst: sumItemIgst,
     lineTotal: sumItemLineTotal,
+    lineKind: "",
+    creditRefInvoice: "",
   });
   itemizedTotalsRow.font = { bold: true };
   itemizedTotalsRow.commit();

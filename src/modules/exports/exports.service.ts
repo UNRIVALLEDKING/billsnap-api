@@ -9,17 +9,15 @@ import { billLineItems, bills } from "../bills/bills.schema";
 import { businesses } from "../businesses/businesses.schema";
 import { vendors } from "../catalog/catalog.schema";
 import { EXPORT_JOB } from "./export.job";
+import { buildExportDataset, buildTallyBills } from "./exports.dataset";
 import {
   type CreateExportInput,
   type ExportDataset,
-  type ExportItemRow,
   type ExportRecord,
-  type ExportSummaryRow,
-  type ExportVendorSpendRow,
   exportsTable,
 } from "./exports.schema";
 import { generateCsv } from "./writers/csv.writer";
-import { generateTallyXml, type TallyBill, type TallyBillLine } from "./writers/tally.writer";
+import { generateTallyXml, type TallyBill } from "./writers/tally.writer";
 import { generateXlsx } from "./writers/xlsx.writer";
 
 export type ExportsDeps = {
@@ -155,114 +153,31 @@ export async function processExport(deps: ExportsDeps, exportId: string): Promis
             .orderBy(asc(billLineItems.position))
         : [];
 
-    const billMap = new Map(matchingBills.map((b) => [b.id, b]));
-
-    // Build Sheet 1: Summary rows
-    const summaryRows: ExportSummaryRow[] = matchingBills.map((b) => {
-      const vInfo = b.vendorId ? vendorMap.get(b.vendorId) : undefined;
-      const vendorName = vInfo?.name ?? b.vendorNameRaw ?? "";
-      const gstin = b.counterpartyGstin ?? vInfo?.gstin ?? null;
-      const grand = b.grandTotal ?? b.confirmedTotal ?? b.subtotal ?? "0";
-
-      return {
-        id: b.id,
-        billDate: b.billDate,
-        type: b.type === "purchase" ? "Purchase" : "Sale",
-        invoiceNumber: b.invoiceNumber,
-        vendorName,
-        gstin,
-        subtotal: Number(b.subtotal) || 0,
-        cgst: Number(b.cgstTotal) || 0,
-        sgst: Number(b.sgstTotal) || 0,
-        igst: Number(b.igstTotal) || 0,
-        cess: Number(b.cessTotal) || 0,
-        total: Number(grand) || 0,
-        status: b.status,
-      };
-    });
-
-    // Build Sheet 2: Itemized rows
-    const itemizedRows: ExportItemRow[] = lineItemRows.map((l) => {
-      const b = billMap.get(l.billId);
-      const vInfo = b?.vendorId ? vendorMap.get(b.vendorId) : undefined;
-      const vendorName = vInfo?.name ?? b?.vendorNameRaw ?? "";
-
-      return {
-        billDate: b?.billDate ?? null,
-        invoiceNumber: b?.invoiceNumber ?? null,
-        vendorName,
-        description: l.descriptionRaw,
-        hsnSac: l.hsnSac,
-        quantity: Number(l.quantity) || 0,
-        unit: l.unit,
-        rate: Number(l.rate) || 0,
-        discount: Number(l.discount) || 0,
-        taxableValue: Number(l.taxableValue) || 0,
-        gstRate: l.gstRate != null ? Number(l.gstRate) : null,
-        cgst: Number(l.cgst) || 0,
-        sgst: Number(l.sgst) || 0,
-        igst: Number(l.igst) || 0,
-        lineTotal: Number(l.amount) || 0,
-      };
-    });
-
-    // Build Sheet 3: Vendor Spend aggregation
-    const spendMap = new Map<
-      string,
-      {
-        vendorName: string;
-        gstin: string | null;
-        billsSet: Set<string>;
-        totalSpend: number;
-        totalQuantity: number;
-      }
-    >();
-
-    for (const b of matchingBills) {
-      const vInfo = b.vendorId ? vendorMap.get(b.vendorId) : undefined;
-      const vendorName = vInfo?.name ?? b.vendorNameRaw ?? "Unspecified";
-      const gstin = b.counterpartyGstin ?? vInfo?.gstin ?? null;
-      const grand = Number(b.grandTotal ?? b.confirmedTotal ?? b.subtotal) || 0;
-
-      let entry = spendMap.get(vendorName);
-      if (!entry) {
-        entry = {
-          vendorName,
-          gstin,
-          billsSet: new Set<string>(),
-          totalSpend: 0,
-          totalQuantity: 0,
-        };
-        spendMap.set(vendorName, entry);
-      }
-      entry.billsSet.add(b.id);
-      entry.totalSpend += grand;
+    // Earlier bills that credit lines point at ("Less from earlier bills"), for their invoice numbers.
+    const refIds = [
+      ...new Set(
+        lineItemRows.flatMap((l) =>
+          l.lineKind === "credit" && l.creditRefBillId ? [l.creditRefBillId] : [],
+        ),
+      ),
+    ];
+    const refInvoices = new Map<string, string | null>();
+    if (refIds.length > 0) {
+      const refRows = await deps.database.db
+        .select({ id: bills.id, invoiceNumber: bills.invoiceNumber })
+        .from(bills)
+        .where(and(eq(bills.businessId, businessId), inArray(bills.id, refIds)));
+      for (const r of refRows) refInvoices.set(r.id, r.invoiceNumber);
     }
 
-    for (const l of lineItemRows) {
-      const b = billMap.get(l.billId);
-      const vInfo = b?.vendorId ? vendorMap.get(b.vendorId) : undefined;
-      const vendorName = vInfo?.name ?? b?.vendorNameRaw ?? "Unspecified";
-      const entry = spendMap.get(vendorName);
-      if (entry) {
-        entry.totalQuantity += Number(l.quantity) || 0;
-      }
-    }
-
-    const vendorSpendRows: ExportVendorSpendRow[] = Array.from(spendMap.values()).map((e) => ({
-      vendorName: e.vendorName,
-      gstin: e.gstin,
-      totalBills: e.billsSet.size,
-      totalSpend: e.totalSpend,
-      totalQuantity: e.totalQuantity,
-    }));
-
-    const dataset: ExportDataset = {
-      summary: summaryRows,
-      itemized: itemizedRows,
-      vendorSpend: vendorSpendRows,
-    };
-
+    const dataset: ExportDataset = buildExportDataset({
+      bills: matchingBills,
+      lines: lineItemRows,
+      vendors: vendorMap,
+      refInvoices,
+    });
+    const summaryRows = dataset.summary;
+    const itemizedRows = dataset.itemized;
     // Generate output file
     let fileBuffer: Buffer | Uint8Array;
     let contentType: string;
@@ -278,48 +193,11 @@ export async function processExport(deps: ExportsDeps, exportId: string): Promis
         .limit(1);
       const companyName = biz?.name ?? "Company";
 
-      const linesByBill = new Map<string, TallyBillLine[]>();
-      for (const l of lineItemRows) {
-        let arr = linesByBill.get(l.billId);
-        if (!arr) {
-          arr = [];
-          linesByBill.set(l.billId, arr);
-        }
-        arr.push({
-          description: l.descriptionRaw,
-          quantity: Number(l.quantity) || 0,
-          unit: l.unit,
-          rate: Number(l.rate) || 0,
-          amount: Number(l.amount) || 0,
-        });
-      }
-
-      const tallyBills: TallyBill[] = matchingBills.map((b) => {
-        const vInfo = b.vendorId ? vendorMap.get(b.vendorId) : undefined;
-        const vendorName = vInfo?.name ?? b.vendorNameRaw ?? "Cash";
-        const grand = Number(b.grandTotal ?? b.confirmedTotal ?? b.subtotal) || 0;
-
-        return {
-          id: b.id,
-          type: b.type,
-          billDate: b.billDate,
-          invoiceNumber: b.invoiceNumber,
-          vendorName,
-          partyLedgerName: vendorName,
-          cgst: Number(b.cgstTotal) || 0,
-          sgst: Number(b.sgstTotal) || 0,
-          igst: Number(b.igstTotal) || 0,
-          otherCharges: Number(b.otherCharges) || 0,
-          charges: (b.charges ?? []).map((c) => ({
-            label: c.label,
-            amount: Number(c.amount) || 0,
-            category: c.category,
-          })),
-          roundOff: Number(b.roundOff) || 0,
-          subtotal: Number(b.subtotal) || 0,
-          total: grand,
-          lines: linesByBill.get(b.id) ?? [],
-        };
+      const tallyBills: TallyBill[] = buildTallyBills({
+        bills: matchingBills,
+        lines: lineItemRows,
+        vendors: vendorMap,
+        refInvoices,
       });
 
       const xmlOutput = generateTallyXml({

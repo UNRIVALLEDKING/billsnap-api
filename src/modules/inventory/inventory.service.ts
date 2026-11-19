@@ -7,6 +7,7 @@ import {
   gt,
   gte,
   ilike,
+  inArray,
   isNotNull,
   isNull,
   lt,
@@ -25,10 +26,11 @@ import { breakEven, nextAverage, stockValue, unitCost } from "../costing/average
 import {
   feeDefinitions,
   inventoryTransactions,
+  itemUnits,
   masterProducts,
   stockLots,
 } from "./inventory.schema";
-import { convertUnit, normalizeUnit } from "./units";
+import { builtinFactor, type ItemUnitFactor, normalizeUnit, stockFactor } from "./units";
 
 export type MasterProductView = {
   id: string;
@@ -45,6 +47,10 @@ export type MasterProductView = {
   last_landed_cost: string | null;
   last_purchase_at: string | null;
   break_even: string | null;
+  /** The item's own units and pack sizes (docs/BILL_ACCURACY_PLAN.md section 3). */
+  units: ItemUnitView[];
+  /** Stock in kg when the item is not counted in kg and a kg factor is known; else null. */
+  approx_kg: string | null;
   created_at: string;
   updated_at: string;
   recent_vendors?: { id: string; name: string }[];
@@ -52,6 +58,14 @@ export type MasterProductView = {
   vendor_costs?: VendorCostView[];
   /** Detail only: confirmed sale lines on this item that have no cost. */
   unknown_cost_sales?: number;
+};
+
+/** `per_unit` stock units are in 1 `unit`; a plain decimal string ("37.5"). */
+export type ItemUnitView = {
+  unit: string;
+  per_unit: string;
+  approx: boolean;
+  source: "user" | "suggested";
 };
 
 export type VendorCostView = {
@@ -94,6 +108,75 @@ function costFields(r: CostRow) {
     last_purchase_at: r.lastPurchaseAt,
     break_even: breakEven(avg, last),
   };
+}
+
+type ItemUnitRow = typeof itemUnits.$inferSelect;
+
+/** The item_units rows of a business (or of `ids` only), by item id. */
+export async function loadItemUnits(
+  db: Executor,
+  businessId: string,
+  ids?: string[],
+): Promise<Map<string, ItemUnitRow[]>> {
+  const out = new Map<string, ItemUnitRow[]>();
+  if (ids && ids.length === 0) return out;
+  const rows = await db
+    .select()
+    .from(itemUnits)
+    .where(
+      and(
+        eq(itemUnits.businessId, businessId),
+        ids ? inArray(itemUnits.masterProductId, ids) : undefined,
+      ),
+    )
+    .orderBy(asc(itemUnits.unit));
+  for (const r of rows) {
+    const list = out.get(r.masterProductId) ?? [];
+    list.push(r);
+    out.set(r.masterProductId, list);
+  }
+  return out;
+}
+
+const factorsOf = (rows: readonly ItemUnitRow[]): ItemUnitFactor[] =>
+  rows.map((r) => ({ unit: r.unit, perUnit: r.perUnit }));
+
+function unitFields(stock: string, standardUnit: string, rows: readonly ItemUnitRow[]) {
+  const perKg =
+    normalizeUnit(standardUnit) === "kg" ? null : stockFactor("kg", standardUnit, factorsOf(rows));
+  return {
+    units: rows.map((r) => ({
+      unit: r.unit,
+      per_unit: dec(r.perUnit).toFixed(),
+      approx: r.approx,
+      source: r.source === "suggested" ? ("suggested" as const) : ("user" as const),
+    })),
+    approx_kg: perKg?.gt(0) ? fmt(dec(stock).div(perKg), 3) : null,
+  };
+}
+
+export type UnitConversionLine = {
+  /** Position in the request's lines; null for a line of another, already confirmed bill. */
+  index: number | null;
+  bill_id: string | null;
+  item_id: string;
+  item_name: string;
+  from_unit: string;
+  to_unit: string;
+  /** The bill's customer or vendor (docs/CUSTOMER_SPECS_PLAN.md B7); null when none or not saved yet. */
+  party_id: string | null;
+  party_name: string | null;
+  /** That party's product for the line, whose pack spec can be saved; null when not saved yet. */
+  product_id: string | null;
+};
+
+/** 422: a quantity whose unit can't be turned into the item's stock unit. Never passed through. */
+export function unitConversionNeeded(lines: UnitConversionLine[]): AppError {
+  const first = lines[0];
+  const what = first
+    ? `How many ${first.to_unit} are in 1 ${first.from_unit} of ${first.item_name}${first.party_name ? ` for ${first.party_name}` : ""}?`
+    : "A unit can't be converted";
+  return new AppError("unit_conversion_needed", 422, what, {}, { lines });
 }
 
 export type InventoryTransactionView = {
@@ -178,6 +261,9 @@ export async function listMasterProducts(
     .orderBy(asc(masterProducts.displayName))
     .limit(limit);
 
+  const unitsOf =
+    rows.length > 0 ? await loadItemUnits(db, businessId) : new Map<string, ItemUnitRow[]>();
+
   // Vendors who supplied each item, in one query, so the app can search the list by vendor.
   const supplied = new Map<string, { id: string; name: string }[]>();
   if (rows.length > 0) {
@@ -212,6 +298,7 @@ export async function listMasterProducts(
     current_stock_weight: fmt(r.currentStockWeight, 3),
     reorder_level: r.reorderLevel ? fmt(r.reorderLevel, 3) : null,
     ...costFields(r),
+    ...unitFields(r.currentStockWeight, r.standardUnit, unitsOf.get(r.id) ?? []),
     created_at: r.createdAt.toISOString(),
     updated_at: r.updatedAt.toISOString(),
     recent_vendors: supplied.get(r.id) ?? [],
@@ -333,6 +420,11 @@ export async function getMasterProduct(
     current_stock_weight: fmt(row.currentStockWeight, 3),
     reorder_level: row.reorderLevel ? fmt(row.reorderLevel, 3) : null,
     ...costFields(row),
+    ...unitFields(
+      row.currentStockWeight,
+      row.standardUnit,
+      (await loadItemUnits(db, businessId, [id])).get(id) ?? [],
+    ),
     created_at: row.createdAt.toISOString(),
     updated_at: row.updatedAt.toISOString(),
     recent_vendors: uniqueVendors,
@@ -420,6 +512,8 @@ export async function createMasterProduct(
     current_stock_weight: fmt(created.currentStockWeight, 3),
     reorder_level: created.reorderLevel ? fmt(created.reorderLevel, 3) : null,
     ...costFields(created),
+    units: [],
+    approx_kg: null,
     created_at: created.createdAt.toISOString(),
     updated_at: created.updatedAt.toISOString(),
   };
@@ -432,10 +526,10 @@ export async function updateMasterProduct(
   input: {
     displayName?: string | undefined;
     category?: string | null | undefined;
-    standardUnit?: string | undefined;
     reorderLevel?: string | null | undefined;
   },
 ): Promise<MasterProductView> {
+  // The stock unit changes through changeStandardUnit (item-units.ts), which converts the history.
   const patch: Record<string, unknown> = {
     updatedAt: new Date(),
   };
@@ -448,36 +542,6 @@ export async function updateMasterProduct(
   }
 
   if (input.category !== undefined) patch.category = input.category?.trim() || null;
-  if (input.standardUnit !== undefined) {
-    const unit = normalizeUnit(input.standardUnit);
-    const [current] = await db
-      .select({ standardUnit: masterProducts.standardUnit })
-      .from(masterProducts)
-      .where(and(eq(masterProducts.businessId, businessId), eq(masterProducts.id, id)))
-      .limit(1);
-    if (!current) throw notFound("master_product");
-    if (current.standardUnit !== unit) {
-      // Stored stock and ledger rows are in the old unit; relabelling them would corrupt the totals.
-      const [moved] = await db
-        .select({ id: inventoryTransactions.id })
-        .from(inventoryTransactions)
-        .where(
-          and(
-            eq(inventoryTransactions.businessId, businessId),
-            eq(inventoryTransactions.masterProductId, id),
-          ),
-        )
-        .limit(1);
-      if (moved) {
-        throw new AppError(
-          "unit_locked",
-          409,
-          "Unit can't be changed once this product has stock history",
-        );
-      }
-    }
-    patch.standardUnit = unit;
-  }
   if (input.reorderLevel !== undefined) {
     patch.reorderLevel = input.reorderLevel ? fmt(input.reorderLevel, 3) : null;
   }
@@ -530,10 +594,18 @@ export type RecordStockIncrementInput = {
   masterProductId: string;
   deltaQuantity: string | Decimal;
   quantityUnit?: string | null | undefined;
+  /** Stock units in 1 `quantityUnit`, decided by the caller (a bill line's factor); skips the rule. */
+  stockFactor?: Decimal | null | undefined;
   billId?: string | null | undefined;
   billLineItemId?: string | null | undefined;
   vendorId?: string | null | undefined;
-  type?: "purchase_in" | "sale_out" | "manual_adjustment" | "wastage" | undefined;
+  type?:
+    | "purchase_in"
+    | "sale_out"
+    | "purchase_return"
+    | "manual_adjustment"
+    | "wastage"
+    | undefined;
   note?: string | null | undefined;
   /** Wastage only: why the stock was lost. */
   reason?: string | null | undefined;
@@ -544,6 +616,12 @@ export type RecordStockIncrementInput = {
   cost?: { goods: string; fees: string } | null | undefined;
   /** Bill date of the purchase, used to order lots oldest first. */
   receivedOn?: string | null | undefined;
+  /** Day the movement counts from, for "last cost"; defaults to `receivedOn`, then today. */
+  asOf?: string | null | undefined;
+  /** Replay only (inventory/replay.ts): rebuilt rows keep these ids and this time. */
+  transactionId?: string | undefined;
+  lotId?: string | undefined;
+  createdAt?: Date | undefined;
 };
 
 export type StockMovement = {
@@ -572,6 +650,7 @@ export async function recordStockIncrement(
   const [prod] = await tx
     .select({
       id: masterProducts.id,
+      displayName: masterProducts.displayName,
       standardUnit: masterProducts.standardUnit,
       currentStockWeight: masterProducts.currentStockWeight,
       avgCost: masterProducts.avgCost,
@@ -589,9 +668,33 @@ export async function recordStockIncrement(
 
   if (!prod) throw notFound("master_product");
 
-  // Convert quantity to standard unit of product
+  // Into the stock unit by the conversion rule (units.ts stockFactor); an unknown factor is an error.
   const rawQty = dec(input.deltaQuantity);
-  const convertedWeight = convertUnit(rawQty, input.quantityUnit, prod.standardUnit);
+  const from = input.quantityUnit ? normalizeUnit(input.quantityUnit) : prod.standardUnit;
+  let factor = input.stockFactor ?? builtinFactor(from, prod.standardUnit);
+  if (!factor) {
+    const own = await tx
+      .select({ unit: itemUnits.unit, perUnit: itemUnits.perUnit })
+      .from(itemUnits)
+      .where(eq(itemUnits.masterProductId, prod.id));
+    factor = stockFactor(from, prod.standardUnit, own);
+  }
+  if (!factor) {
+    throw unitConversionNeeded([
+      {
+        index: 0,
+        bill_id: input.billId ?? null,
+        item_id: prod.id,
+        item_name: prod.displayName,
+        from_unit: from,
+        to_unit: prod.standardUnit,
+        party_id: null,
+        party_name: null,
+        product_id: null,
+      },
+    ]);
+  }
+  const convertedWeight = rawQty.mul(factor).toDecimalPlaces(3, Decimal.ROUND_HALF_UP);
 
   const prevStock = dec(prod.currentStockWeight);
   const resultingStockDec = prevStock.plus(convertedWeight);
@@ -612,14 +715,14 @@ export async function recordStockIncrement(
     const landed = unitCost(total, convertedWeight) as string;
     avg = nextAverage({ stock: prevStock, avg, qty: convertedWeight, cost: total });
     // "Last" means latest by bill date: an old bill confirmed late must not replace today's price.
-    const receivedOn = input.receivedOn ?? new Date().toISOString().slice(0, 10);
-    if (!lastPurchaseAt || receivedOn >= lastPurchaseAt) {
+    const asOf = input.asOf ?? input.receivedOn ?? new Date().toISOString().slice(0, 10);
+    if (!lastPurchaseAt || asOf >= lastPurchaseAt) {
       lastLanded = landed;
-      lastPurchaseAt = receivedOn;
+      lastPurchaseAt = asOf;
     }
     unitCostOut = landed;
     valueDelta = fmt(total, 4);
-    lotId = newId();
+    lotId = input.lotId ?? newId();
     await tx.insert(stockLots).values({
       id: lotId,
       businessId: input.businessId,
@@ -634,6 +737,7 @@ export async function recordStockIncrement(
       landedUnitCost: landed,
       // Stock already sold below zero is covered by this lot, so only what is left stays open.
       remainingQty: prevStock.lt(0) ? fmt(Decimal.max(resultingStockDec, 0), 3) : deltaWeight,
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     });
   } else {
     if (avg != null) {
@@ -656,7 +760,7 @@ export async function recordStockIncrement(
     .where(eq(masterProducts.id, prod.id));
 
   await tx.insert(inventoryTransactions).values({
-    id: newId(),
+    id: input.transactionId ?? newId(),
     businessId: input.businessId,
     masterProductId: prod.id,
     billId: input.billId ?? null,
@@ -670,6 +774,7 @@ export async function recordStockIncrement(
     lotId,
     note: input.note ?? null,
     reason: input.reason ?? null,
+    ...(input.createdAt ? { createdAt: input.createdAt } : {}),
   });
 
   return { resultingStock, deltaWeight, unitCost: unitCostOut, valueDelta, lotId };
@@ -681,7 +786,11 @@ async function consumeLots(tx: Executor, masterProductId: string, qty: Decimal):
     .select({ id: stockLots.id, remaining: stockLots.remainingQty })
     .from(stockLots)
     .where(and(eq(stockLots.masterProductId, masterProductId), gt(stockLots.remainingQty, "0")))
-    .orderBy(sql`${stockLots.receivedOn} asc nulls last`, asc(stockLots.createdAt))
+    .orderBy(
+      sql`${stockLots.receivedOn} asc nulls last`,
+      asc(stockLots.createdAt),
+      asc(stockLots.id),
+    )
     .for("update");
   let left = qty;
   for (const lot of open) {
@@ -724,13 +833,25 @@ export async function listInventoryTransactions(
     .from(inventoryTransactions)
     .leftJoin(vendors, eq(inventoryTransactions.vendorId, vendors.id))
     .leftJoin(bills, eq(inventoryTransactions.billId, bills.id))
+    .leftJoin(stockLots, eq(inventoryTransactions.lotId, stockLots.id))
     .where(
       and(
         eq(inventoryTransactions.businessId, businessId),
         eq(inventoryTransactions.masterProductId, masterProductId),
       ),
     )
-    .orderBy(desc(inventoryTransactions.createdAt))
+    // Newest first in replay order (inventory/event-order.ts), so each row's resulting stock follows
+    // from the one below it.
+    .orderBy(
+      desc(
+        sql`coalesce(${bills.billDate}, ${stockLots.receivedOn}, (${inventoryTransactions.createdAt} at time zone 'Asia/Kolkata')::date)`,
+      ),
+      desc(
+        sql`case when ${inventoryTransactions.transactionType} = 'purchase_in' or ${inventoryTransactions.lotId} is not null then 0 else 1 end`,
+      ),
+      desc(inventoryTransactions.createdAt),
+      desc(inventoryTransactions.id),
+    )
     .limit(Math.min(limit, 100));
 
   return rows.map((r) => ({
@@ -983,13 +1104,13 @@ export type FeeDefinitionView = {
 export type CreateFeeDefinitionInput = {
   name: string;
   category?: string | undefined;
-  defaultBasis?: "weight" | "value" | undefined;
+  defaultBasis?: "weight" | "value" | "packs" | undefined;
 };
 
 export type UpdateFeeDefinitionInput = {
   name?: string | undefined;
   category?: string | undefined;
-  defaultBasis?: "weight" | "value" | undefined;
+  defaultBasis?: "weight" | "value" | "packs" | undefined;
   isActive?: boolean | undefined;
 };
 

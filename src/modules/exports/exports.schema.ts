@@ -90,6 +90,14 @@ export type ExportSummaryRow = {
   sgst: number;
   igst: number;
   cess: number;
+  /** Charges (freight, packing...) added to the bill. */
+  otherCharges?: number;
+  /** Bill-level discount, shown as a deduction. */
+  discount?: number;
+  /** Credits from earlier bills ("Less from earlier bills"), shown as a deduction. */
+  credits?: number;
+  roundOff?: number;
+  /** What is payable: goods + charges + taxes - discount - credits + round off. */
   total: number;
   status: string;
 };
@@ -109,7 +117,12 @@ export type ExportItemRow = {
   cgst: number;
   sgst: number;
   igst: number;
+  /** Negative for a credit line. */
   lineTotal: number;
+  /** "credit" for a deduction for an earlier bill; goods when absent. */
+  lineKind?: "goods" | "credit";
+  /** Credit only: invoice number of the earlier bill, when it resolves. */
+  creditRefInvoice?: string | null;
 };
 
 export type ExportVendorSpendRow = {

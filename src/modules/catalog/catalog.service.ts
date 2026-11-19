@@ -3,8 +3,11 @@ import type { Executor } from "../../platform/db/client";
 import { AppError, badRequest, notFound } from "../../platform/errors";
 import { isValidGstin } from "../../shared/gst";
 import { newId } from "../../shared/ids";
+import { dec, fmt } from "../../shared/money";
 import { billLineItems, bills } from "../bills/bills.schema";
 import { masterProducts } from "../inventory/inventory.schema";
+import { replayItems } from "../inventory/replay";
+import { normalizeUnit, type PackSpec } from "../inventory/units";
 import { mergeEvents, productAliases, products, vendorAliases, vendors } from "./catalog.schema";
 import { normalizeProductName, normalizeVendorName } from "./normalize";
 
@@ -16,6 +19,10 @@ export type ProductView = {
   unit: string | null;
   master_product_id: string | null;
   aliases: string[];
+  /** This party's pack size (docs/CUSTOMER_SPECS_PLAN.md B7): 1 pack_unit = pack_qty pack_qty_unit. */
+  pack_unit: string | null;
+  pack_qty: string | null;
+  pack_qty_unit: string | null;
 };
 
 /** Serialises catalog writes per business (resolve on confirm, merges). Released at commit. */
@@ -121,7 +128,7 @@ export async function resolveVendor(
   x: Executor,
   businessId: string,
   input: { vendorId: string | null; name: string; gstin: string | null },
-): Promise<string> {
+): Promise<{ id: string; created: boolean }> {
   const name = input.name.trim();
   let id: string | null = null;
   if (input.vendorId) {
@@ -140,6 +147,7 @@ export async function resolveVendor(
   }
   const gstin = input.gstin && isValidGstin(input.gstin) ? input.gstin : null;
   id ??= await matchVendor(x, businessId, { gstin, name });
+  const created = id === null;
   if (id === null) {
     id = newId();
     await x.insert(vendors).values({
@@ -170,7 +178,7 @@ export async function resolveVendor(
     }
   }
   await addVendorAlias(x, businessId, id, name);
-  return id;
+  return { id, created };
 }
 
 /** Same rules for a product, scoped to its vendor. A product id from another vendor is ignored. */
@@ -185,7 +193,7 @@ export async function resolveProduct(
     hsnSac: string | null;
     masterProductId?: string | null | undefined;
   },
-): Promise<{ id: string; masterProductId: string | null }> {
+): Promise<{ id: string; masterProductId: string | null; created: boolean }> {
   const description = input.description.trim();
   let id: string | null = null;
   let masterProductId: string | null = input.masterProductId ?? null;
@@ -221,6 +229,7 @@ export async function resolveProduct(
     }
   }
 
+  const created = id === null;
   if (id === null) {
     id = newId();
     await x.insert(products).values({
@@ -242,7 +251,7 @@ export async function resolveProduct(
   }
 
   await addProductAlias(x, businessId, vendorId, id, description);
-  return { id, masterProductId };
+  return { id, masterProductId, created };
 }
 
 export async function mapProductToMaster(
@@ -326,7 +335,103 @@ export async function listProducts(x: Executor, businessId: string): Promise<Pro
           .map((a) => a.raw),
       ),
     ],
+    ...specView(p),
   }));
+}
+
+// ---- pack specs per party (docs/CUSTOMER_SPECS_PLAN.md B7) -------------------------------------------
+
+type SpecColumns = {
+  packUnit: string | null;
+  packQty: string | null;
+  packQtyUnit: string | null;
+};
+
+/** The spec fields of a product view; all null unless all three are set. */
+export function specView(p: SpecColumns): {
+  pack_unit: string | null;
+  pack_qty: string | null;
+  pack_qty_unit: string | null;
+} {
+  const spec = packSpecOf(p);
+  return spec
+    ? {
+        pack_unit: spec.packUnit,
+        pack_qty: dec(spec.packQty).toFixed(),
+        pack_qty_unit: spec.packQtyUnit,
+      }
+    : { pack_unit: null, pack_qty: null, pack_qty_unit: null };
+}
+
+export function packSpecOf(p: SpecColumns): PackSpec | null {
+  return p.packUnit && p.packQty && p.packQtyUnit
+    ? { packUnit: p.packUnit, packQty: p.packQty, packQtyUnit: p.packQtyUnit }
+    : null;
+}
+
+/** Pack specs of `ids` (products that have one), by product id. */
+export async function loadPackSpecs(
+  x: Executor,
+  businessId: string,
+  ids: Iterable<string>,
+): Promise<Map<string, PackSpec>> {
+  const list = [...new Set(ids)];
+  const out = new Map<string, PackSpec>();
+  if (list.length === 0) return out;
+  const rows = await x
+    .select({
+      id: products.id,
+      packUnit: products.packUnit,
+      packQty: products.packQty,
+      packQtyUnit: products.packQtyUnit,
+    })
+    .from(products)
+    .where(and(eq(products.businessId, businessId), inArray(products.id, list)));
+  for (const r of rows) {
+    const spec = packSpecOf(r);
+    if (spec) out.set(r.id, spec);
+  }
+  return out;
+}
+
+/**
+ * Sets (or with null, clears) a party product's pack spec. Bills already confirmed keep the factor they
+ * were confirmed with; the product's stock item is replayed so lines confirmed before factors were
+ * stored follow the new spec.
+ */
+export async function setProductSpec(
+  x: Executor,
+  businessId: string,
+  productId: string,
+  spec: PackSpec | null,
+): Promise<ProductView> {
+  await lockCatalog(x, businessId);
+  const values = spec
+    ? {
+        packUnit: normalizeUnit(spec.packUnit),
+        packQty: fmt(spec.packQty, 6),
+        packQtyUnit: normalizeUnit(spec.packQtyUnit),
+      }
+    : { packUnit: null, packQty: null, packQtyUnit: null };
+  if (values.packUnit !== null && values.packUnit === values.packQtyUnit) {
+    throw invalid("pack_unit and pack_qty_unit must differ");
+  }
+  const [updated] = await x
+    .update(products)
+    .set({ ...values, updatedAt: new Date() })
+    .where(
+      and(
+        eq(products.id, productId),
+        eq(products.businessId, businessId),
+        isNull(products.mergedIntoId),
+      ),
+    )
+    .returning({ masterProductId: products.masterProductId });
+  if (!updated) throw notFound("Product not found");
+  if (updated.masterProductId) await replayItems(x, businessId, [updated.masterProductId]);
+  const view = (await listProducts(x, businessId)).find((p) => p.id === productId);
+  if (!view) throw notFound("Product not found");
+  return view;
 }
 
 // ---- merges ------------------------------------------------------------------------------------------

@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { AppEnv } from "../../app-env";
 import { parseJsonBody } from "../../http/validate";
 import type { Database } from "../../platform/db/client";
+import { notFound } from "../../platform/errors";
+import { dec } from "../../shared/money";
 import {
   listProducts,
   listVendors,
@@ -12,6 +14,7 @@ import {
   mergeVendors,
   removeProductAlias,
   removeVendorAlias,
+  setProductSpec,
 } from "./catalog.service";
 
 const mergeBody = z.object({
@@ -22,6 +25,31 @@ const mergeBody = z.object({
 
 const mappingBody = z.object({
   master_product_id: z.uuid().nullable(),
+});
+
+// An id that cannot be a UUID cannot exist: same answer as a missing one.
+const productIdParam = (raw: string | undefined) => {
+  const parsed = z.uuid().safeParse(raw);
+  if (!parsed.success) throw notFound("Product not found");
+  return parsed.data;
+};
+
+const unitText = z
+  .string()
+  .trim()
+  .min(1)
+  .max(20)
+  .transform((s) => s.toLowerCase());
+
+// "1 box = 200 g": pack_unit box, pack_qty "200", pack_qty_unit g (docs/CUSTOMER_SPECS_PLAN.md B7).
+const specBody = z.object({
+  pack_unit: unitText,
+  pack_qty: z
+    .string()
+    .trim()
+    .regex(/^\d{1,8}(\.\d{1,6})?$/, "expected a positive decimal string")
+    .refine((s) => dec(s).gt(0), "pack_qty must be greater than 0"),
+  pack_qty_unit: unitText,
 });
 
 function mergeRoutes(
@@ -68,6 +96,23 @@ export const productRoutes = (database: Database) => {
     const b = await parseJsonBody(mappingBody, c.req.raw);
     await mapProductToMaster(database.db, c.var.business.id, id, b.master_product_id);
     return c.json({ status: "ok" });
+  });
+  routes.put("/:id/spec", async (c) => {
+    const id = productIdParam(c.req.param("id"));
+    const b = await parseJsonBody(specBody, c.req.raw);
+    const product = await database.tx(({ db }) =>
+      setProductSpec(db, c.var.business.id, id, {
+        packUnit: b.pack_unit,
+        packQty: b.pack_qty,
+        packQtyUnit: b.pack_qty_unit,
+      }),
+    );
+    return c.json(product);
+  });
+  routes.delete("/:id/spec", async (c) => {
+    const id = productIdParam(c.req.param("id"));
+    const product = await database.tx(({ db }) => setProductSpec(db, c.var.business.id, id, null));
+    return c.json(product);
   });
   routes.delete("/:id/aliases/:alias", async (c) => {
     const id = c.req.param("id");

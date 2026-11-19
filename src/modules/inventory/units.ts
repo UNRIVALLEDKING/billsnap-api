@@ -77,6 +77,7 @@ export function getUnitType(unitStr: string): UnitType {
  * Converts a quantity from one unit to target unit.
  * If units are of the same type (e.g. grams -> kg), exact decimal conversion is performed.
  * If units are of different or unknown types, the quantity is returned as-is.
+ * Not for stock: stock goes through stockFactor below, which never passes a number through.
  */
 export function convertUnit(
   quantity: string | Decimal,
@@ -103,4 +104,102 @@ export function convertUnit(
 
   // Round to 3 decimal places for quantities/weights
   return inTarget.toDecimalPlaces(3, Decimal.ROUND_HALF_UP);
+}
+
+// ---- Stock conversion rule (docs/BILL_ACCURACY_PLAN.md section 3) ---------------------------------------
+
+/** Units that name a container: their size depends on the item, so no built-in factor applies. */
+const CONTAINERS = new Set(["box", "boxes", "pkt", "packet", "packets", "pack"]);
+
+/**
+ * Built-in factor, how many `to` are in 1 `from`, for two units of one kind (kg and g, l and ml, pcs
+ * and dozen). Null when the kinds differ, a unit is unknown, or either is a container.
+ */
+export function builtinFactor(
+  fromRaw: string | null | undefined,
+  toRaw: string | null | undefined,
+): Decimal | null {
+  const from = normalizeUnit(fromRaw);
+  const to = normalizeUnit(toRaw);
+  if (from === to) return new Decimal(1);
+  const a = UNIT_MAP[from];
+  const b = UNIT_MAP[to];
+  if (!a || !b || a.type !== b.type || CONTAINERS.has(from) || CONTAINERS.has(to)) return null;
+  return a.toBase.div(b.toBase);
+}
+
+/** An item's own unit: `perUnit` stock units are in 1 `unit` (an item_units row). */
+export type ItemUnitFactor = { unit: string; perUnit: string };
+
+/**
+ * How many stock units are in 1 `from`, or null when unknown (the caller must ask, never pass the
+ * number through):
+ * 1. same unit -> 1; 2. same kind -> built-in factor; 3. the item's own row for that unit;
+ * 4. one built-in step to an own row (500 g of an item counted in pcs, with 1 kg ~ 5 pcs).
+ */
+export function stockFactor(
+  fromRaw: string | null | undefined,
+  stockUnit: string,
+  itemUnits: readonly ItemUnitFactor[],
+): Decimal | null {
+  const builtin = builtinFactor(fromRaw, stockUnit);
+  if (builtin) return builtin;
+  const from = normalizeUnit(fromRaw);
+  const own = itemUnits.find((u) => normalizeUnit(u.unit) === from);
+  if (own) return dec(own.perUnit);
+  for (const u of itemUnits) {
+    const hop = builtinFactor(from, u.unit);
+    if (hop) return hop.mul(dec(u.perUnit));
+  }
+  return null;
+}
+
+// ---- Line conversion with party pack specs (docs/CUSTOMER_SPECS_PLAN.md B7) ---------------------------
+
+/** A party product's pack size: 1 `packUnit` holds `packQty` `packQtyUnit` (1 box = 0.2 kg). */
+export type PackSpec = { packUnit: string; packQty: string; packQtyUnit: string };
+
+/**
+ * Where a line's stock factor came from: same unit, built-in, the party's pack spec ("customer", for
+ * customers and vendors alike), the item's own units, or chosen on review for one bill ("manual").
+ */
+export type FactorSource = "same" | "builtin" | "customer" | "item" | "manual";
+
+/**
+ * Sources replay keeps as stored: a party spec or a review choice belongs to the bill, so later spec
+ * edits never rewrite it. Same, built-in and item factors are recomputed, so editing an item's own
+ * unit re-counts the stock received in it (docs/BILL_ACCURACY_PLAN.md section 3).
+ */
+export const STORED_SOURCES: ReadonlySet<string> = new Set<FactorSource>(["customer", "manual"]);
+
+/** Stock units in 1 pack of `spec`, or null when its qty unit doesn't convert to the stock unit. */
+export function specFactor(
+  spec: PackSpec,
+  stockUnit: string,
+  itemUnits: readonly ItemUnitFactor[],
+): Decimal | null {
+  const inner = stockFactor(spec.packQtyUnit, stockUnit, itemUnits);
+  return inner ? dec(spec.packQty).mul(inner) : null;
+}
+
+/**
+ * The stock factor of a bill line, in order: 1. same unit; 2. built-in; 3. the line's party product
+ * spec when its pack unit is the line unit; 4. the item's own units. Null when unknown.
+ */
+export function lineStockFactor(
+  fromRaw: string | null | undefined,
+  stockUnit: string,
+  itemUnits: readonly ItemUnitFactor[],
+  spec: PackSpec | null,
+): { factor: Decimal; source: FactorSource } | null {
+  const from = normalizeUnit(fromRaw);
+  if (from === normalizeUnit(stockUnit)) return { factor: new Decimal(1), source: "same" };
+  const builtin = builtinFactor(from, stockUnit);
+  if (builtin) return { factor: builtin, source: "builtin" };
+  if (spec && normalizeUnit(spec.packUnit) === from) {
+    const f = specFactor(spec, stockUnit, itemUnits);
+    if (f?.gt(0)) return { factor: f, source: "customer" };
+  }
+  const own = stockFactor(from, stockUnit, itemUnits);
+  return own ? { factor: own, source: "item" } : null;
 }

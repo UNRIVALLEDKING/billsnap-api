@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { dec, sum } from "../../shared/money";
 import { type AllocInput, type AllocResult, allocateCharges, splitPaise } from "./allocate";
-import { breakEven, nextAverage, stockValue, unitCost } from "./average";
+import { breakEven, nextAverage, saleProfit, stockValue, unitCost } from "./average";
 import fixtures from "./fixtures.json";
 
 type Fixture = { name: string; input: AllocInput; expected: AllocResult };
@@ -39,6 +39,12 @@ describe("average cost", () => {
   test("spreadsheet: EC landed at 90.6123/kg", () => {
     expect(unitCost("9061.23", "100")).toBe("90.6123");
     expect(unitCost("1", "0")).toBeNull();
+  });
+
+  test("bill #17550 by boxes: baby corn 108.6111 per pcs, cucumber 67.3333 per kg", () => {
+    expect(unitCost("9775.00", "90")).toBe("108.6111");
+    expect(unitCost("3350.00", "150")).toBe("22.3333");
+    expect(unitCost("10100.00", "150")).toBe("67.3333");
   });
 
   test("three sugar invoices, each with its own fees, average to 115", () => {
@@ -80,5 +86,13 @@ describe("average cost", () => {
     expect(breakEven("115.0000", null)).toBe("115.0000");
     expect(breakEven(null, "130.0000")).toBe("130.0000");
     expect(breakEven("140.0000", "130.0000")).toBe("140.0000");
+  });
+
+  test("sale profit: goods after discount, less fees share, less cost of goods", () => {
+    // The tomato example: 8 kg sold at 45 (360), no fees, 8 x 30 cost.
+    expect(saleProfit("360.00", "0.00", "240.00")).toBe("120.00");
+    // The EC sheet: 7200 of sales against 7248.98 of cost is a loss.
+    expect(saleProfit("7200", "0", "7248.98")).toBe("-48.98");
+    expect(saleProfit("1000.00", "25.50", "800.005")).toBe("174.50");
   });
 });

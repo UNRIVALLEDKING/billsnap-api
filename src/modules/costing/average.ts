@@ -33,6 +33,18 @@ export function stockValue(stock: string | Decimal, avg: string | null): string 
   return fmt(s.mul(dec(avg)), 4);
 }
 
+/**
+ * A sale line's gross profit: its goods value (after its bill-discount share, before GST) less its
+ * share of the bill's charges less the cost of the stock it took out. 2 dp.
+ */
+export function saleProfit(
+  goods: string | Decimal,
+  fees: string | Decimal,
+  costOfGoods: string | Decimal,
+): string {
+  return fmt(dec(goods).minus(dec(fees)).minus(dec(costOfGoods)));
+}
+
 /** Lowest safe selling price per unit: the higher of the average and the last landed cost. */
 export function breakEven(avg: string | null, lastLanded: string | null): string | null {
   if (avg == null) return lastLanded;

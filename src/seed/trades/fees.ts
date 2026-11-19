@@ -1,7 +1,8 @@
 export type StandardFee = {
   name: string;
   category: "transport" | "hamali" | "packaging" | "cess" | "other";
-  defaultBasis: "weight" | "value";
+  /** Station charge, ice box and hamali by boxes; freight by weight; mandi cess by value. */
+  defaultBasis: "weight" | "value" | "packs";
 };
 
 export const STANDARD_FEES: StandardFee[] = [
@@ -11,14 +12,19 @@ export const STANDARD_FEES: StandardFee[] = [
     defaultBasis: "weight",
   },
   {
+    name: "Station charge",
+    category: "transport",
+    defaultBasis: "packs",
+  },
+  {
     name: "Hamali / Loading & Unloading",
     category: "hamali",
-    defaultBasis: "weight",
+    defaultBasis: "packs",
   },
   {
     name: "Ice Box Packaging",
     category: "packaging",
-    defaultBasis: "weight",
+    defaultBasis: "packs",
   },
   {
     name: "Wooden Crate Packaging",

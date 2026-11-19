@@ -303,7 +303,14 @@ describe("bills end to end (stub AI)", () => {
     const vendor1Id: string = c1.body.vendor_id;
     expect(await confirmedTotal(bill1Id)).toBe("800.00");
     expect((await post(`/v1/bills/${bill1Id}/confirm`, confirmBody(c1.body))).res.status).toBe(409);
-    expect((await post(`/v1/bills/${bill1Id}/discard`, {})).res.status).toBe(409);
+    // A confirmed bill is edited with PUT and deleted with discard; both replay stock and are covered
+    // in inventory/replay.integration.test.ts. Here: editing an unknown bill is a 404.
+    const putRes = await call(`/v1/bills/${newId()}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(confirmBody(c1.body)),
+    });
+    expect(putRes.status).toBe(404);
 
     const vendors1 = (await json("/v1/vendors")).body;
     expect(vendors1).toEqual([

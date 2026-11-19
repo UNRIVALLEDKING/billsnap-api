@@ -4,6 +4,8 @@ export class AppError extends Error {
     readonly status: number,
     message: string,
     readonly headers: Record<string, string> = {},
+    /** Extra members of the problem body, e.g. the lines a request must fix. */
+    readonly fields: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = "AppError";

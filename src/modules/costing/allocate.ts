@@ -7,9 +7,28 @@ import { dec, fmt } from "../../shared/money";
  *
  * Pure and money-safe (decimal strings in, decimal strings out). The app runs the same cases from
  * fixtures.json through its Dart port, so change both together.
+ *
+ * Fee bases (docs/BILL_ACCURACY_PLAN.md section 4):
+ * - "weight": by kg. Any line that is not a weight -> "value" (not_weighable); no kg at all -> "value"
+ *   (no_weight).
+ * - "value": by line value. No value at all -> "equal" (no_value).
+ * - "packs": by the line's pack count (boxes, crates). Lines without packs came loose and get nothing.
+ *   No line has packs -> "weight" (no_packs), then on down the weight rules.
+ * `fallback` names the last reason a basis had to give way.
+ *
+ * Each charge can be split on its own basis: give `charges` and each is split separately (a charge
+ * without a basis uses the bill's `basis`), then the line shares are added up. Without `charges`,
+ * `fees` is split on `basis` as one charge.
+ *
+ * Fixture format (fixtures.json): { name, input: AllocInput, expected: AllocResult }.
+ * - input.lines[]: { value, tax, weightKg: string | null, packs?: string | null }; packs absent = none.
+ * - input.charges?: [{ amount, basis?: "weight" | "value" | "packs" | null }]; when present, input.fees
+ *   is their sum.
+ * - expected.charges is present exactly when input.charges is: [{ basis, fallback }] per charge, in
+ *   order; expected.basis / fallback are then how the bill's own `basis` resolves over these lines.
  */
 
-export type FeeSplitBasis = "weight" | "value";
+export type FeeSplitBasis = "weight" | "value" | "packs";
 
 export type AllocLine = {
   /** Line amount as printed/confirmed: qty x rate - line discount. */
@@ -18,12 +37,22 @@ export type AllocLine = {
   tax: string;
   /** Quantity in kg, or null when the line's unit is not a weight (pcs, box, unknown). */
   weightKg: string | null;
+  /** Containers the line came in (its pack count); null or absent when it came loose. */
+  packs?: string | null | undefined;
+};
+
+export type AllocCharge = {
+  amount: string;
+  /** This charge's basis; null or absent uses the bill's `basis`. */
+  basis?: FeeSplitBasis | null | undefined;
 };
 
 export type AllocInput = {
   lines: AllocLine[];
   /** Sum of the bill's charges (transport, packing, hamali...). */
   fees: string;
+  /** The charges one by one, each split on its own basis; when given, `fees` is their sum. */
+  charges?: AllocCharge[] | undefined;
   /** Bill-level discount, shared by value. */
   discount: string;
   /** Bill-level GST not carried on the lines (lines show no tax, bill totals do). Shared by value. */
@@ -46,10 +75,17 @@ export type AllocatedLine = {
   cost: string;
 };
 
-export type AllocResult = {
+export type AllocFallback = "no_packs" | "not_weighable" | "no_weight" | "no_value" | null;
+
+export type ChargeSplit = {
   /** Basis actually used; differs from the requested one when a fallback applied. */
   basis: FeeSplitBasis | "equal";
-  fallback: "not_weighable" | "no_weight" | "no_value" | null;
+  fallback: AllocFallback;
+};
+
+export type AllocResult = ChargeSplit & {
+  /** Per charge, in order; present only when the input gave `charges`. */
+  charges?: ChargeSplit[];
   lines: AllocatedLine[];
 };
 
@@ -82,6 +118,47 @@ export function splitPaise(total: string | Decimal, weights: Array<string | Deci
   return floors.map((f) => f.div(100).mul(sign));
 }
 
+/** The shares a fee is split by on `requested`, falling back as described at the top. */
+function feeWeights(
+  lines: AllocLine[],
+  values: Decimal[],
+  valueSum: Decimal,
+  requested: FeeSplitBasis,
+): ChargeSplit & { weights: Decimal[] } {
+  let basis: ChargeSplit["basis"] = requested;
+  let fallback: AllocFallback = null;
+  let weights: Decimal[] = values;
+  const positive = (s: string | null | undefined) => {
+    const d = s == null ? ZERO : dec(s);
+    return d.gt(0) ? d : ZERO;
+  };
+  const total = (xs: Decimal[]) => xs.reduce((a, b) => a.plus(b), ZERO);
+
+  if (basis === "packs") {
+    const packs = lines.map((l) => positive(l.packs));
+    if (total(packs).gt(0)) return { basis, fallback, weights: packs };
+    basis = "weight";
+    fallback = "no_packs";
+  }
+  if (basis === "weight") {
+    if (lines.some((l) => l.weightKg == null)) {
+      basis = "value";
+      fallback = "not_weighable";
+    } else {
+      const kg = lines.map((l) => positive(l.weightKg));
+      if (total(kg).gt(0)) return { basis, fallback, weights: kg };
+      basis = "value";
+      fallback = "no_weight";
+    }
+  }
+  if (basis === "value" && valueSum.lte(0) && lines.length > 0) {
+    basis = "equal";
+    fallback = "no_value";
+    weights = lines.map(() => dec("1"));
+  }
+  return { basis, fallback, weights };
+}
+
 export function allocateCharges(input: AllocInput): AllocResult {
   const { lines } = input;
   const values = lines.map((l) => {
@@ -90,39 +167,29 @@ export function allocateCharges(input: AllocInput): AllocResult {
   });
   const valueSum = values.reduce((a, b) => a.plus(b), ZERO);
 
-  // Fee basis, with fallbacks: a non-weight unit anywhere -> value; nothing weighs -> value; no value -> equal.
-  let basis: AllocResult["basis"] = input.basis;
-  let fallback: AllocResult["fallback"] = null;
-  let feeWeights: Decimal[] = values;
-  if (input.basis === "weight") {
-    if (lines.some((l) => l.weightKg == null)) {
-      basis = "value";
-      fallback = "not_weighable";
-    } else {
-      const kg = lines.map((l) => {
-        const k = dec(l.weightKg as string);
-        return k.gt(0) ? k : ZERO;
+  const bill = feeWeights(lines, values, valueSum, input.basis);
+  let feeShares: Decimal[];
+  let charges: ChargeSplit[] | undefined;
+  if (input.charges) {
+    // Each charge on its own basis, in whole paise, then added up per line.
+    feeShares = lines.map(() => ZERO);
+    charges = input.charges.map((c) => {
+      const split = feeWeights(lines, values, valueSum, c.basis ?? input.basis);
+      splitPaise(c.amount, split.weights).forEach((share, i) => {
+        feeShares[i] = (feeShares[i] as Decimal).plus(share);
       });
-      if (kg.reduce((a, b) => a.plus(b), ZERO).gt(0)) feeWeights = kg;
-      else {
-        basis = "value";
-        fallback = "no_weight";
-      }
-    }
+      return { basis: split.basis, fallback: split.fallback };
+    });
+  } else {
+    feeShares = splitPaise(input.fees, bill.weights);
   }
-  if (basis === "value" && valueSum.lte(0) && lines.length > 0) {
-    basis = "equal";
-    fallback = "no_value";
-    feeWeights = lines.map(() => dec("1"));
-  }
-
-  const feeShares = splitPaise(input.fees, feeWeights);
   const discountShares = splitPaise(input.discount, values);
   const billTaxShares = splitPaise(input.billTax, values);
 
   return {
-    basis,
-    fallback,
+    basis: bill.basis,
+    fallback: bill.fallback,
+    ...(charges ? { charges } : {}),
     lines: lines.map((l, i) => {
       const lineTax = dec(l.tax);
       const billTax = billTaxShares[i] as Decimal;

@@ -244,8 +244,8 @@ describe("Multi-Trade Catalog Initialization & In-Stock Separation", () => {
     expect(body.success).toBe(true);
     expect(body.productsCreated).toBeGreaterThanOrEqual(100);
     expect(body.products_created).toBe(body.productsCreated);
-    expect(body.feesCreated).toBe(5);
-    expect(body.fees_created).toBe(5);
+    expect(body.feesCreated).toBe(6); // the standard fees, incl. Station charge (by boxes)
+    expect(body.fees_created).toBe(6);
     expect(body.total_products).toBe(body.productsCreated);
     expect(body.categories).toContain("Citrus");
     expect(body.categories).toContain("Apples & Pears");
@@ -266,6 +266,12 @@ describe("Multi-Trade Catalog Initialization & In-Stock Separation", () => {
     expect(feeNames).toContain("Ice Box Packaging");
     expect(feeNames).toContain("Wooden Crate Packaging");
     expect(feeNames).toContain("APMC / Mandi Cess");
+    const basisOf = (name: string) => feeBody.fees.find((f) => f.name === name)?.default_basis;
+    expect(basisOf("Station charge")).toBe("packs");
+    expect(basisOf("Ice Box Packaging")).toBe("packs");
+    expect(basisOf("Hamali / Loading & Unloading")).toBe("packs");
+    expect(basisOf("Transport / Tempo")).toBe("weight");
+    expect(basisOf("APMC / Mandi Cess")).toBe("value");
   });
 
   test("GET /v1/inventory/trade-catalogs lists the starter lists", async () => {

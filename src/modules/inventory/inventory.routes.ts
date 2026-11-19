@@ -7,6 +7,8 @@ import type { Database } from "../../platform/db/client";
 import { AppError } from "../../platform/errors";
 import { importTradeCatalogs, listTradeCatalogs } from "../../seed/trade-seeder";
 import { dec } from "../../shared/money";
+import { lockCatalog } from "../catalog/catalog.service";
+import { BULK_MAX_ITEMS, bulkCreateMasterProducts, listCatalogItems } from "./catalog-items";
 import {
   createFeeDefinition,
   createMasterProduct,
@@ -25,6 +27,7 @@ import {
   WASTAGE_REASONS,
   wastageReport,
 } from "./inventory.service";
+import { changeStandardUnit, deleteItemUnit, setItemUnit } from "./item-units";
 
 const createMasterProductSchema = z.object({
   display_name: z.string().trim().min(1).max(200),
@@ -56,6 +59,35 @@ const updateMasterProductSchema = z.object({
     .nullable(),
 });
 
+const itemUnitSchema = z.object({
+  per_unit: z
+    .string()
+    .trim()
+    .regex(/^\d{1,8}(\.\d{1,6})?$/, "positive decimal string, up to 6 places")
+    .refine((s) => dec(s).gt(0), "must be more than 0"),
+  approx: z.boolean().optional().default(false),
+});
+
+const unitParam = z.string().trim().toLowerCase().min(1).max(20);
+const parseUnitParam = (raw: string) => {
+  const parsed = unitParam.safeParse(raw);
+  if (!parsed.success) throw validationFailed("unit must be 1 to 20 characters");
+  return parsed.data;
+};
+
+const bulkMasterProductsSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        display_name: z.string().trim().min(1).max(200),
+        category: z.string().trim().max(100).optional().nullable(),
+        standard_unit: z.string().trim().max(20).optional().default("kg"),
+      }),
+    )
+    .min(1)
+    .max(BULK_MAX_ITEMS),
+});
+
 const adjustStockSchema = z.object({
   delta_weight: z
     .string()
@@ -76,13 +108,13 @@ export const createFeeDefinitionSchema = z.object({
     .enum(["transport", "hamali", "packaging", "cess", "other"])
     .optional()
     .default("other"),
-  default_basis: z.enum(["weight", "value"]).optional().default("weight"),
+  default_basis: z.enum(["weight", "value", "packs"]).optional().default("weight"),
 });
 
 export const updateFeeDefinitionSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   category: z.enum(["transport", "hamali", "packaging", "cess", "other"]).optional(),
-  default_basis: z.enum(["weight", "value"]).optional(),
+  default_basis: z.enum(["weight", "value", "packs"]).optional(),
   is_active: z.boolean().optional(),
 });
 
@@ -192,6 +224,25 @@ export function inventoryRoutes(database: Database): Hono<AppEnv> {
   // Starter lists the business can pick from
   app.get("/trade-catalogs", (c) => c.json({ items: listTradeCatalogs() }));
 
+  // Items of one starter list, flagged when already in the business's list
+  app.get("/trade-catalogs/:id/items", async (c) => {
+    const business = c.get("business");
+    const items = await listCatalogItems(
+      database.db,
+      business.id,
+      c.req.param("id"),
+      c.req.query("category"),
+    );
+    return c.json({ items });
+  });
+
+  // Create many master products at once, skipping names that exist
+  app.post("/master-products/bulk", async (c) => {
+    const business = c.get("business");
+    const input = await parseJsonBody(bulkMasterProductsSchema, c.req.raw);
+    return c.json(await bulkCreateMasterProducts(database, business.id, input.items));
+  });
+
   // Wastage report for a range of local (IST) days, both ends inclusive
   app.get("/wastage", async (c) => {
     const business = c.get("business");
@@ -273,14 +324,47 @@ export function inventoryRoutes(database: Database): Hono<AppEnv> {
     const id = c.req.param("id");
     const input = await parseJsonBody(updateMasterProductSchema, c.req.raw);
 
-    const product = await updateMasterProduct(database.db, business.id, id, {
-      displayName: input.display_name,
-      category: input.category,
-      standardUnit: input.standard_unit,
-      reorderLevel: input.reorder_level,
+    const product = await database.tx(async ({ db }) => {
+      if (input.standard_unit !== undefined) {
+        // Same lock confirm and edit take: the item is replayed in its new unit.
+        await lockCatalog(db, business.id);
+        await changeStandardUnit(db, business.id, id, input.standard_unit);
+      }
+      return updateMasterProduct(db, business.id, id, {
+        displayName: input.display_name,
+        category: input.category,
+        reorderLevel: input.reorder_level,
+      });
     });
 
     return c.json({ master_product: product });
+  });
+
+  // An item's own unit or pack size: how many stock units are in 1 :unit
+  app.put("/master-products/:id/units/:unit", async (c) => {
+    const business = c.get("business");
+    const id = c.req.param("id");
+    const unit = parseUnitParam(c.req.param("unit"));
+    const input = await parseJsonBody(itemUnitSchema, c.req.raw);
+    await database.tx(async ({ db }) => {
+      await lockCatalog(db, business.id);
+      await setItemUnit(db, business.id, id, unit, {
+        perUnit: input.per_unit,
+        approx: input.approx,
+      });
+    });
+    return c.json({ master_product: await getMasterProduct(database.db, business.id, id) });
+  });
+
+  app.delete("/master-products/:id/units/:unit", async (c) => {
+    const business = c.get("business");
+    const id = c.req.param("id");
+    const unit = parseUnitParam(c.req.param("unit"));
+    await database.tx(async ({ db }) => {
+      await lockCatalog(db, business.id);
+      await deleteItemUnit(db, business.id, id, unit);
+    });
+    return c.json({ master_product: await getMasterProduct(database.db, business.id, id) });
   });
 
   // Delete master product (its ledger goes with it; linked products and bill lines are unlinked)

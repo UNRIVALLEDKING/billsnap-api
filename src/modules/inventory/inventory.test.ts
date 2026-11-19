@@ -309,13 +309,15 @@ describe("Inventory & Multi-Vendor Stock Tracking", () => {
       body: JSON.stringify({ delta_weight: "500", unit: "g" }),
     });
 
-    // Stock moved: the unit is locked, but other fields still save.
+    // Stock moved: a unit the history can't convert to is locked, but other fields still save.
+    // (g -> kg converts, so that change is allowed and replays: see units.integration.test.ts.)
     const unit = await app.request(`/v1/inventory/master-products/${id}`, {
       method: "PATCH",
       headers,
-      body: JSON.stringify({ standard_unit: "kg" }),
+      body: JSON.stringify({ standard_unit: "pcs" }),
     });
     expect(unit.status).toBe(409);
+    expect(((await unit.json()) as Json).units).toEqual(["g"]);
     const sameUnit = await app.request(`/v1/inventory/master-products/${id}`, {
       method: "PATCH",
       headers,

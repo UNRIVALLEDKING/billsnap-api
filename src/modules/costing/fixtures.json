@@ -301,5 +301,184 @@
         { "fees": "0.01", "discount": "0.00", "tax": "0.00", "goods": "10.00", "cost": "10.01" }
       ]
     }
+  },
+  {
+    "name": "bill #17550: station charge and ice boxes shared by boxes (16); loose pcs lines get no fees",
+    "input": {
+      "lines": [
+        { "value": "6750.00", "tax": "0", "weightKg": "150", "packs": "4" },
+        { "value": "5460.00", "tax": "0", "weightKg": "78", "packs": "4" },
+        { "value": "6300.00", "tax": "0", "weightKg": "70", "packs": "2" },
+        { "value": "2520.00", "tax": "0", "weightKg": "21", "packs": "1" },
+        { "value": "1600.00", "tax": "0", "weightKg": "20", "packs": "1" },
+        { "value": "5200.00", "tax": "0", "weightKg": "40", "packs": "2" },
+        { "value": "8100.00", "tax": "0", "weightKg": null, "packs": "2" },
+        { "value": "150.00", "tax": "0", "weightKg": null },
+        { "value": "280.00", "tax": "0", "weightKg": null },
+        { "value": "200.00", "tax": "0", "weightKg": null }
+      ],
+      "fees": "13400.00",
+      "charges": [
+        { "amount": "3000.00", "basis": "packs" },
+        { "amount": "10400.00", "basis": "packs" }
+      ],
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "weight"
+    },
+    "expected": {
+      "basis": "value",
+      "fallback": "not_weighable",
+      "charges": [{ "basis": "packs", "fallback": null }, { "basis": "packs", "fallback": null }],
+      "lines": [
+        {
+          "fees": "3350.00",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "6750.00",
+          "cost": "10100.00"
+        },
+        {
+          "fees": "3350.00",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "5460.00",
+          "cost": "8810.00"
+        },
+        {
+          "fees": "1675.00",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "6300.00",
+          "cost": "7975.00"
+        },
+        {
+          "fees": "837.50",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "2520.00",
+          "cost": "3357.50"
+        },
+        {
+          "fees": "837.50",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "1600.00",
+          "cost": "2437.50"
+        },
+        {
+          "fees": "1675.00",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "5200.00",
+          "cost": "6875.00"
+        },
+        {
+          "fees": "1675.00",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "8100.00",
+          "cost": "9775.00"
+        },
+        { "fees": "0.00", "discount": "0.00", "tax": "0.00", "goods": "150.00", "cost": "150.00" },
+        { "fees": "0.00", "discount": "0.00", "tax": "0.00", "goods": "280.00", "cost": "280.00" },
+        { "fees": "0.00", "discount": "0.00", "tax": "0.00", "goods": "200.00", "cost": "200.00" }
+      ]
+    }
+  },
+  {
+    "name": "each charge on its own basis; a charge without one uses the bill's",
+    "input": {
+      "lines": [
+        { "value": "5000.00", "tax": "0", "weightKg": "100", "packs": "2" },
+        { "value": "5000.00", "tax": "0", "weightKg": "50" }
+      ],
+      "fees": "650.00",
+      "charges": [
+        { "amount": "300.00", "basis": "weight" },
+        { "amount": "100.00", "basis": "value" },
+        { "amount": "200.00", "basis": "packs" },
+        { "amount": "50.00", "basis": null }
+      ],
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "value"
+    },
+    "expected": {
+      "basis": "value",
+      "fallback": null,
+      "charges": [
+        { "basis": "weight", "fallback": null },
+        { "basis": "value", "fallback": null },
+        { "basis": "packs", "fallback": null },
+        { "basis": "value", "fallback": null }
+      ],
+      "lines": [
+        {
+          "fees": "475.00",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "5000.00",
+          "cost": "5475.00"
+        },
+        {
+          "fees": "175.00",
+          "discount": "0.00",
+          "tax": "0.00",
+          "goods": "5000.00",
+          "cost": "5175.00"
+        }
+      ]
+    }
+  },
+  {
+    "name": "by packs with no packs on any line: falls back to weight",
+    "input": {
+      "lines": [
+        { "value": "100.00", "tax": "0", "weightKg": "10" },
+        { "value": "300.00", "tax": "0", "weightKg": "30", "packs": null }
+      ],
+      "fees": "40.00",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "packs"
+    },
+    "expected": {
+      "basis": "weight",
+      "fallback": "no_packs",
+      "lines": [
+        { "fees": "10.00", "discount": "0.00", "tax": "0.00", "goods": "100.00", "cost": "110.00" },
+        { "fees": "30.00", "discount": "0.00", "tax": "0.00", "goods": "300.00", "cost": "330.00" }
+      ]
+    }
+  },
+  {
+    "name": "by packs with no packs and a pcs line: weight gives way to value",
+    "input": {
+      "lines": [
+        { "value": "100.00", "tax": "0", "weightKg": "10" },
+        { "value": "300.00", "tax": "0", "weightKg": null }
+      ],
+      "fees": "40.00",
+      "discount": "0",
+      "billTax": "0",
+      "taxesIncluded": false,
+      "taxIsCost": false,
+      "basis": "packs"
+    },
+    "expected": {
+      "basis": "value",
+      "fallback": "not_weighable",
+      "lines": [
+        { "fees": "10.00", "discount": "0.00", "tax": "0.00", "goods": "100.00", "cost": "110.00" },
+        { "fees": "30.00", "discount": "0.00", "tax": "0.00", "goods": "300.00", "cost": "330.00" }
+      ]
+    }
   }
 ]

@@ -25,11 +25,19 @@ const lineItem = z.object({
   igst: text,
   cess: text,
   amount: text,
+  // Containers the line came in ("4 box"); optional, older reads have none.
+  package_count: text,
+  package_unit: text,
   uncertain_fields: z
     .array(z.string())
     .nullish()
     .transform((v) => v ?? []),
 });
+
+const party = z
+  .object({ name: text, gstin: text })
+  .nullish()
+  .transform((v) => v ?? null);
 
 const emptyCounterparty = {
   name: null,
@@ -53,6 +61,9 @@ export const extractionOutput = z.object({
     })
     .nullish()
     .transform((v) => v ?? emptyCounterparty),
+  // Both sides as printed (prompt v3, docs/CUSTOMER_SPECS_PLAN.md B6); older reads have neither.
+  seller: party,
+  buyer: party,
   own_gstin_on_bill: text,
   invoice_number: text,
   invoice_number_uncertain: flag,
@@ -76,6 +87,11 @@ export const extractionOutput = z.object({
     .array(z.object({ label: text, amount: text, category: text.optional() }))
     .nullish()
     .transform((v) => v ?? []),
+  // "Less Broccoli 27 x 70 = 1890": items deducted for an earlier bill; optional, older reads have none.
+  deductions: z
+    .array(z.object({ description: text, quantity: text, unit: text, rate: text, amount: text }))
+    .nullish()
+    .transform((v) => v ?? []),
   round_off: text,
   grand_total: text,
   grand_total_uncertain: flag,
@@ -83,6 +99,7 @@ export const extractionOutput = z.object({
 
 export type ExtractionOutput = z.infer<typeof extractionOutput>;
 export type ExtractedLine = ExtractionOutput["line_items"][number];
+export type ExtractedDeduction = ExtractionOutput["deductions"][number];
 
 // Gemini responseSchema (OpenAPI subset).
 const str = { type: "STRING", nullable: true } as const;
@@ -105,6 +122,8 @@ export const RESPONSE_SCHEMA = obj(
       ]),
       nullable: true,
     },
+    seller: { ...obj({ name: str, gstin: str }), nullable: true },
+    buyer: { ...obj({ name: str, gstin: str }), nullable: true },
     own_gstin_on_bill: str,
     invoice_number: str,
     invoice_number_uncertain: bool,
@@ -130,6 +149,8 @@ export const RESPONSE_SCHEMA = obj(
           igst: str,
           cess: str,
           amount: str,
+          package_count: str,
+          package_unit: str,
           uncertain_fields: { type: "ARRAY", items: { type: "STRING" } },
         },
         ["description", "quantity", "unit", "rate", "amount"],
@@ -143,6 +164,13 @@ export const RESPONSE_SCHEMA = obj(
     igst_total: str,
     cess_total: str,
     other_charges: { type: "ARRAY", items: obj({ label: str, amount: str, category: str }) },
+    deductions: {
+      type: "ARRAY",
+      items: obj({ description: str, quantity: str, unit: str, rate: str, amount: str }, [
+        "description",
+        "amount",
+      ]),
+    },
     round_off: str,
     grand_total: str,
     grand_total_uncertain: bool,

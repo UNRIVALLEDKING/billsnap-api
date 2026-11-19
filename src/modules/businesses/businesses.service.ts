@@ -13,6 +13,7 @@ export async function createBusiness(
     state_code?: string | undefined;
     trade_type?: string | undefined;
     configured_categories?: string[] | undefined;
+    name_aliases?: string[] | undefined;
   },
 ) {
   const businessId = newId();
@@ -25,6 +26,7 @@ export async function createBusiness(
       stateCode: data.state_code ?? null,
       tradeType: data.trade_type ?? "general",
       configuredCategories: data.configured_categories ?? [],
+      nameAliases: data.name_aliases ?? [],
       createdBy: userId,
     })
     .returning();
@@ -46,6 +48,7 @@ export async function createBusiness(
     state_code: created.stateCode,
     trade_type: created.tradeType,
     configured_categories: created.configuredCategories,
+    name_aliases: created.nameAliases,
     role: "owner" as const,
     created_at: created.createdAt.toISOString(),
   };
@@ -65,6 +68,7 @@ export async function getBusiness(db: Database["db"], businessId: string) {
     state_code: found.stateCode,
     trade_type: found.tradeType,
     configured_categories: found.configuredCategories,
+    name_aliases: found.nameAliases,
     created_at: found.createdAt.toISOString(),
   };
 }
@@ -78,6 +82,7 @@ export async function updateBusiness(
     state_code?: string | null | undefined;
     trade_type?: string | undefined;
     configured_categories?: string[] | undefined;
+    name_aliases?: string[] | undefined;
   },
 ) {
   const values: Partial<typeof businesses.$inferInsert> = {};
@@ -87,6 +92,7 @@ export async function updateBusiness(
   if (data.trade_type !== undefined) values.tradeType = data.trade_type;
   if (data.configured_categories !== undefined)
     values.configuredCategories = data.configured_categories;
+  if (data.name_aliases !== undefined) values.nameAliases = data.name_aliases;
 
   if (Object.keys(values).length === 0) {
     return getBusiness(db, businessId);
@@ -109,6 +115,7 @@ export async function updateBusiness(
     state_code: updated.stateCode,
     trade_type: updated.tradeType,
     configured_categories: updated.configuredCategories,
+    name_aliases: updated.nameAliases,
     created_at: updated.createdAt.toISOString(),
   };
 }
@@ -120,6 +127,7 @@ export async function listUserBusinesses(db: Database["db"], userId: string) {
       name: businesses.name,
       gstin: businesses.gstin,
       stateCode: businesses.stateCode,
+      nameAliases: businesses.nameAliases,
       role: memberships.role,
       createdAt: businesses.createdAt,
     })
@@ -132,6 +140,7 @@ export async function listUserBusinesses(db: Database["db"], userId: string) {
     name: r.name,
     gstin: r.gstin,
     state_code: r.stateCode,
+    name_aliases: r.nameAliases,
     role: r.role,
     created_at: r.createdAt.toISOString(),
   }));

@@ -22,6 +22,15 @@ export const businessRoutes = (database: Database) => {
 
   routes.post("/", async (c) => {
     const body = await parseJsonBody(createBusinessBody, c.req.raw);
+    // One business per account (a single tax entity).
+    const [existing] = await database.db
+      .select({ businessId: memberships.businessId })
+      .from(memberships)
+      .where(eq(memberships.userId, c.var.user.id))
+      .limit(1);
+    if (existing) {
+      throw new AppError("business_exists", 409, "Your account already has a business.");
+    }
     const created = await database.tx(({ db }) => createBusiness(db, c.var.user.id, body));
     return c.json({ business: created }, 201);
   });

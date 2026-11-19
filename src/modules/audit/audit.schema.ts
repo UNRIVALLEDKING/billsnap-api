@@ -2,7 +2,14 @@ import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-cor
 import { businesses, users } from "../businesses/businesses.schema";
 
 export type AuditEntityType = "bill" | "vendor" | "product";
-export type AuditAction = "created" | "extracted" | "confirmed" | "edited" | "discarded";
+export type AuditAction =
+  | "created"
+  | "extracted"
+  | "confirmed"
+  | "edited"
+  | "discarded"
+  /** A confirmed bill deleted: its stock movements are undone. */
+  | "removed";
 
 export const auditLog = pgTable(
   "audit_log",

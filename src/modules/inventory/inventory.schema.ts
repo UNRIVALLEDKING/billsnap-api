@@ -60,7 +60,7 @@ export const inventoryTransactions = pgTable(
     billId: uuid("bill_id"),
     billLineItemId: uuid("bill_line_item_id"),
     vendorId: uuid("vendor_id").references(() => vendors.id),
-    transactionType: text("transaction_type").notNull(), // 'purchase_in', 'sale_out', 'manual_adjustment', 'wastage'
+    transactionType: text("transaction_type").notNull(), // 'purchase_in', 'sale_out', 'purchase_return', 'manual_adjustment', 'wastage'
     deltaWeight: numeric("delta_weight", { precision: 14, scale: 3 }).notNull(),
     resultingStockWeight: numeric("resulting_stock_weight", { precision: 14, scale: 3 }).notNull(),
     /** Cost per standard unit this movement was valued at; null when no cost is known. */
@@ -119,6 +119,29 @@ export const stockLots = pgTable(
       .on(t.masterProductId, t.receivedOn, t.createdAt)
       .where(sql`${t.remainingQty} > 0`),
   ],
+);
+
+/**
+ * Pack sizes and other units of an item (docs/BILL_ACCURACY_PLAN.md section 3): `per_unit` is how many
+ * stock units (the item's standard_unit) are in 1 of `unit`. Baby corn counted in pcs: box -> 45,
+ * kg -> 5 (approx). 'suggested' rows are learned from confirmed bills and never replace a 'user' row.
+ */
+export const itemUnits = pgTable(
+  "item_units",
+  {
+    id: uuid("id").primaryKey(),
+    businessId: businessId(),
+    masterProductId: uuid("master_product_id")
+      .notNull()
+      .references(() => masterProducts.id, { onDelete: "cascade" }),
+    unit: text("unit").notNull(),
+    perUnit: numeric("per_unit", { precision: 14, scale: 6 }).notNull(),
+    approx: boolean("approx").notNull().default(false),
+    /** 'user' (entered) or 'suggested' (learned from a bill). */
+    source: text("source").notNull().default("user"),
+    createdAt: createdAt(),
+  },
+  (t) => [unique("item_units_product_unit_uq").on(t.masterProductId, t.unit)],
 );
 
 export const feeCategoryEnum = pgEnum("fee_category", [
