@@ -7,6 +7,7 @@ import { masterProducts } from "../inventory/inventory.schema";
 import { loadItemUnits } from "../inventory/inventory.service";
 import { type FactorSource, lineStockFactor } from "../inventory/units";
 import { billFiles, billLineItems, bills, type ExtractedParties } from "./bills.schema";
+import { nameSuggestion } from "./name-spec";
 
 export type ChargeView = {
   id: string;
@@ -87,6 +88,11 @@ export type LineView = {
   stock_qty: string | null;
   /** The pack spec of this line's party product (its customer or vendor), or null. */
   suggested_spec: { pack_unit: string; pack_qty: string; pack_qty_unit: string } | null;
+  /**
+   * Where suggested_spec came from: "party" (the party product's spec), "name" (a size read from the item
+   * name, only when the party has none; the app applies it by sending stock_factor), or null.
+   */
+  suggested_spec_source: "party" | "name" | null;
   /** "goods", or "credit": deducted for an earlier bill; its amount comes off the total. */
   line_kind: "goods" | "credit";
   /** Credit only (true on goods lines): it was in stock and went back as a purchase_return. */
@@ -256,6 +262,21 @@ async function lineFactorPreview(x: Executor, businessId: string, lines: LineRow
     let factor: string | null = null;
     let source: FactorSource | null = null;
     const item = items.find((i) => i.id === l.masterProductId);
+    let suggested = suggested_spec;
+    let suggestedSource: "party" | "name" | null = spec ? "party" : null;
+    if (!spec && item && l.stockFactor == null) {
+      const byName = nameSuggestion({
+        description: l.descriptionRaw,
+        lineUnit: l.unit,
+        stockUnit: item.standardUnit,
+        itemUnits: (unitsOf.get(item.id) ?? []).map((r) => ({ unit: r.unit, perUnit: r.perUnit })),
+        partySpec: null,
+      });
+      if (byName) {
+        suggested = byName;
+        suggestedSource = "name";
+      }
+    }
     if (item && l.stockFactor != null) {
       factor = l.stockFactor;
       source = (l.stockFactorSource as FactorSource | null) ?? null;
@@ -271,7 +292,8 @@ async function lineFactorPreview(x: Executor, businessId: string, lines: LineRow
       stock_factor: factor === null ? null : dec(factor).toFixed(),
       stock_factor_source: source,
       stock_qty: factor === null ? null : fmt(dec(l.quantity).mul(dec(factor)), 3),
-      suggested_spec,
+      suggested_spec: suggested,
+      suggested_spec_source: suggestedSource,
     };
   };
 }

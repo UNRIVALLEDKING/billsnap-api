@@ -17,7 +17,7 @@ import { vendors } from "../catalog/catalog.schema";
 import { createExtractHandler } from "../extraction/extract.job";
 import { createMasterProduct, listInventoryTransactions } from "../inventory/inventory.service";
 import { replayItems } from "../inventory/replay";
-import { billFiles, bills } from "./bills.schema";
+import { billFiles, billLineItems, bills } from "./bills.schema";
 
 const SECRET = "t".repeat(40);
 const OWN_GSTIN = "27AAPFU0939F1ZV";
@@ -550,5 +550,87 @@ describe("B6: your own business is never the other party", () => {
     ]);
     expect(res.status).toBe(200);
     expect(((await res.json()) as Json).flags).not.toContain("looks_like_sale");
+  });
+});
+
+describe("B7: pack size suggested from the item name", () => {
+  const DESC = "Kaffir Lime Leaves (Makroot) - 10 g";
+  const kiranakart = { name: "Kiranakart" };
+  // Its own kg item: an earlier test switches Cherry tomatoes to grams.
+  let lime: string;
+  beforeAll(async () => {
+    lime = (
+      await createMasterProduct(database.db, {
+        businessId,
+        displayName: "Kaffir lime leaves",
+        standardUnit: "kg",
+      })
+    ).id;
+  });
+
+  test("a pcs line on a kg item shows the name size; confirming with it saves the party spec", async () => {
+    const id = await newBill("sale");
+    await database.db.insert(billLineItems).values({
+      id: newId(),
+      businessId,
+      billId: id,
+      position: 0,
+      descriptionRaw: DESC,
+      masterProductId: lime,
+      quantity: "25",
+      unit: "pcs",
+      rate: "20",
+      amount: "500",
+    });
+    const before = (await getJson(`/v1/bills/${id}`)).lines[0] as Json;
+    expect(before.suggested_spec).toEqual({ pack_unit: "pcs", pack_qty: "10", pack_qty_unit: "g" });
+    expect(before.suggested_spec_source).toBe("name");
+    expect(before.stock_factor).toBeNull();
+
+    const res = await confirm(id, "sale", kiranakart, [
+      {
+        desc: DESC,
+        qty: "25",
+        unit: "pcs",
+        rate: "20",
+        stockFactor: "0.01",
+        saveSpec: true,
+        packQtyUnit: "g",
+        item: lime,
+      },
+    ]);
+    expect(res.status).toBe(200);
+    const view = (await res.json()) as Json;
+    ids.kiranakart = view.vendor_id;
+    expect(view.lines[0]).toMatchObject({
+      stock_factor: "0.01",
+      stock_qty: "0.250",
+      suggested_spec: { pack_unit: "pcs", pack_qty: "10", pack_qty_unit: "g" },
+      suggested_spec_source: "party",
+    });
+    const product = await productOf(ids.kiranakart as string);
+    expect([product.pack_unit, product.pack_qty, product.pack_qty_unit]).toEqual([
+      "pcs",
+      "10",
+      "g",
+    ]);
+  });
+
+  test("the next Kiranakart bill shows the spec from the party", async () => {
+    const view = await extract("sale", {
+      seller: { name: "Samavaya", gstin: OWN_GSTIN },
+      buyer: { name: "Kiranakart", gstin: null },
+      date_iso: "2026-11-18",
+      line_items: [{ description: DESC, quantity: "5", unit: "pcs", rate: "20", amount: "100" }],
+      grand_total: "100",
+    });
+    expect(view.vendor_id).toBe(ids.kiranakart);
+    expect(view.lines[0]).toMatchObject({
+      master_product_id: lime,
+      suggested_spec: { pack_unit: "pcs", pack_qty: "10", pack_qty_unit: "g" },
+      suggested_spec_source: "party",
+      stock_factor: "0.01",
+      stock_factor_source: "customer",
+    });
   });
 });
